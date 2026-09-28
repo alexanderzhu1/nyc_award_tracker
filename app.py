@@ -29,7 +29,6 @@ MOCS_TRACKER_URL = (
     "discretionary-award-tracker.page"
 )
 
-# Council Member surname -> district
 COUNCIL_MEMBER_DISTRICTS = {
     "DE LA ROSA":     {"full_name": "Carmen De La Rosa",    "district": 10, "borough": "Manhattan/Bronx"},
     "RIVERA":         {"full_name": "Carlina Rivera",       "district": 2,  "borough": "Manhattan"},
@@ -302,6 +301,36 @@ def is_discretionary(contract):
     return "discretionary" in title
 
 
+def member_display(m):
+    """Return (title, subtitle) for a member entry."""
+    info = m["info"]
+    if info:
+        title = "{} — District {} ({})".format(
+            info["full_name"], info["district"], info["borough"]
+        )
+    else:
+        title = "{} — district not mapped".format(m["surname"])
+    subtitle = "${:,.0f} across {} award(s)".format(m["total"], m["count"])
+    return title, subtitle
+
+
+def member_matches_search(m, query):
+    """True if the member entry matches the query string."""
+    if not query:
+        return True
+    q = query.upper().strip()
+    info = m["info"]
+    haystack_parts = [m["surname"]]
+    if info:
+        haystack_parts += [
+            info.get("full_name", ""),
+            str(info.get("district", "")),
+            info.get("borough", ""),
+        ]
+    haystack = " ".join(haystack_parts).upper()
+    return q in haystack
+
+
 # ------------------------------------------------------------------
 # STREAMLIT UI
 # ------------------------------------------------------------------
@@ -328,10 +357,8 @@ with st.expander("How to use this", expanded=False):
         1. Type a nonprofit name in the box below.
         2. Press Enter.
         3. Read the results, top to bottom.
-
-        **Data sources:** BetaNYC's New-York-City-Budget repo,
-        Databook.nyc, the MOCS Discretionary Award Tracker, and the
-        NYC Council roster.
+        4. Use the search box in the Council Members section to filter
+           by name, district, or borough.
         """
     )
 
@@ -379,30 +406,45 @@ if org_query:
     st.info(
         "Check official award status. The MOCS Discretionary Award "
         "Tracker is the authoritative source for whether an award has "
-        "been cleared. [Open the MOCS Tracker](" + MOCS_TRACKER_URL + ") "
-        "and search by EIN or organization name."
+        "been cleared. [Open the MOCS Tracker]({}) and search by EIN "
+        "or organization name.".format(MOCS_TRACKER_URL)
     )
 
-    # --- Section 2: Council Members with amounts ---
+    # --- Section 2: Council Members ---
     if members:
         st.subheader("Council Members tied to these awards")
-        for m in members:
-            info = m["info"]
-            if info:
-                st.markdown(
-                    "**{}** — District {} ({})  \n"
-                    "${:,.0f} across {} award(s)".format(
-                        info["full_name"], info["district"],
-                        info["borough"], m["total"], m["count"]
-                    )
-                )
-            else:
-                st.markdown(
-                    "**{}** — district not mapped  \n"
-                    "${:,.0f} across {} award(s)".format(
-                        m["surname"], m["total"], m["count"]
-                    )
-                )
+        st.caption(
+            "Top 5 by dollar amount shown below. Use the search box to "
+            "filter by member name, district, or borough."
+        )
+
+        member_search = st.text_input(
+            "Filter members",
+            placeholder="e.g., Powers, District 4, Brooklyn",
+            key="member_filter",
+        ).strip()
+
+        filtered_members = [
+            m for m in members if member_matches_search(m, member_search)
+        ]
+
+        if not filtered_members:
+            st.info("No Council Members match that filter.")
+        else:
+            top = filtered_members[:5]
+            rest = filtered_members[5:]
+
+            for m in top:
+                title, subtitle = member_display(m)
+                st.markdown("**{}**  \n{}".format(title, subtitle))
+
+            if rest:
+                with st.expander(
+                    "Show {} more member(s)".format(len(rest))
+                ):
+                    for m in rest:
+                        title, subtitle = member_display(m)
+                        st.markdown("**{}**  \n{}".format(title, subtitle))
 
     # --- Section 3: Unattributed awards ---
     if unattributed:
@@ -437,7 +479,7 @@ if org_query:
             })
         st.dataframe(table_rows, use_container_width=True)
 
-    # --- Section 5: Discretionary contracts ---
+    # --- Section 5: Discretionary contracts cards ---
     if discretionary:
         st.subheader("Discretionary contracts")
         for c in discretionary:
