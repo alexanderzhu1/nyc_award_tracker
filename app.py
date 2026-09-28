@@ -154,7 +154,7 @@ def load_betanyc_awards():
         reader = csv.DictReader(io.StringIO(resp.text))
         return list(reader)
     except Exception as e:
-        st.error(f"Could not load award data: {e}")
+        st.error("Could not load award data: {}".format(e))
         return []
 
 
@@ -246,7 +246,7 @@ def trace_nonprofit(org_query):
         contract_text = client.extract_text(contract_resp)
         result["contracts"] = parse_contract_blocks(contract_text)
     except Exception as e:
-        st.warning(f"Contract lookup failed: {e}")
+        st.warning("Contract lookup failed: {}".format(e))
 
     return result
 
@@ -321,9 +321,8 @@ with st.expander("How to use this", expanded=False):
     st.markdown(
         """
         **What this does:** traces a NYC Council discretionary award
-        (sometimes called a "Schedule C" or "member item") from the
-        moment it was designated through the registered contract and
-        the payments recorded in Checkbook NYC.
+        from the moment it was designated through the registered
+        contract and the payments recorded in Checkbook NYC.
 
         **How to use it:**
         1. Type a nonprofit name in the box below.
@@ -331,10 +330,8 @@ with st.expander("How to use this", expanded=False):
         3. Read the results, top to bottom.
 
         **Data sources:** BetaNYC's New-York-City-Budget repo,
-        Databook.nyc, and the NYC Council roster.
-
-        **What this is not:** it is not an official City source. Always
-        verify against the original documents linked at the bottom.
+        Databook.nyc, the MOCS Discretionary Award Tracker, and the
+        NYC Council roster.
         """
     )
 
@@ -344,9 +341,10 @@ org_query = st.text_input(
 ).strip()
 
 if org_query:
-    with st.spinner("Tracing award → contract → payments..."):
+    with st.spinner("Tracing award -> contract -> payments..."):
         result = trace_nonprofit(org_query)
 
+    # --- Section 1: Summary ---
     st.subheader("Summary")
 
     awards = result["awards"]
@@ -367,37 +365,137 @@ if org_query:
         )
         st.stop()
 
+    # --- Completeness warning ---
     if result["single_member_warning"]:
         st.warning(
-            "⚠️ **Data completeness note:** The BetaNYC dataset only shows "
-            "one Council Member for this organization. This may be due to a "
-            "known parsing issue in the source data where award rows lose "
-            "their boundaries during PDF extraction. Cross-check against "
-            "the official Council Schedule C PDFs for the complete list of "
-            "sponsoring Members."
+            "Data completeness note: The BetaNYC dataset only shows one "
+            "Council Member for this organization. This may be due to a "
+            "known parsing issue in the source data. Cross-check against "
+            "the official Council Schedule C PDFs and the MOCS "
+            "Discretionary Award Tracker for the complete list."
         )
 
+    # --- MOCS tracker reference ---
+    st.info(
+        "Check official award status. The MOCS Discretionary Award "
+        "Tracker is the authoritative source for whether an award has "
+        "been cleared. [Open the MOCS Tracker](" + MOCS_TRACKER_URL + ") "
+        "and search by EIN or organization name."
+    )
+
+    # --- Section 2: Council Members with amounts ---
     if members:
         st.subheader("Council Members tied to these awards")
         for m in members:
             info = m["info"]
             if info:
                 st.markdown(
-                    f"**{info['full_name']}** — District {info['district']} "
-                    f"({info['borough']})  \n"
-                    f"${m['total']:,.0f} across {m['count']} award(s)"
+                    "**{}** — District {} ({})  \n"
+                    "${:,.0f} across {} award(s)".format(
+                        info["full_name"], info["district"],
+                        info["borough"], m["total"], m["count"]
+                    )
                 )
             else:
                 st.markdown(
-                    f"**{m['surname']}** — district not mapped  \n"
-                    f"${m['total']:,.0f} across {m['count']} award(s)"
+                    "**{}** — district not mapped  \n"
+                    "${:,.0f} across {} award(s)".format(
+                        m["surname"], m["total"], m["count"]
+                    )
                 )
 
-        st.markdown("---")
-            # --- MOCS tracker reference ---
-        st.info(
-            f"**Check official award status.** The MOCS Discretionary Award "
-            f"Tracker is the authoritative source for whether an award has "
-            f"been cleared. [Open the MOCS Tracker]({MOCS_TRACKER_URL}) and "
-            f"search by EIN or organization name."
-    )
+    # --- Section 3: Unattributed awards ---
+    if unattributed:
+        total_un = sum(parse_amount(a.get("amount")) for a in unattributed)
+        st.subheader("Awards not attributed to a specific Member")
+        st.caption(
+            "${:,.0f} across {} award(s) — these are Citywide Initiatives, "
+            "borough delegations, or fiscal sponsor awards where the source "
+            "data does not name an individual Council Member.".format(
+                total_un, len(unattributed)
+            )
+        )
+        with st.expander("Show {} unattributed rows".format(len(unattributed))):
+            for a in unattributed:
+                year = (a.get("year") or a.get("fiscal_year") or "?").replace("FY", "")
+                amount = a.get("amount", "?")
+                agency = a.get("agency", "?")
+                st.markdown("- FY{} — ${} — {}".format(year, amount, agency))
+
+    # --- Section 4: Award records table ---
+    if awards:
+        st.subheader("Award records")
+        table_rows = []
+        for a in awards:
+            year = (a.get("year") or a.get("fiscal_year") or "?").replace("FY", "")
+            table_rows.append({
+                "Fiscal Year": "FY{}".format(year),
+                "Member": a.get("member", "?"),
+                "Organization": a.get("organization", "?"),
+                "Amount": "${}".format(a.get("amount", "?")),
+                "Agency": a.get("agency", "?"),
+            })
+        st.dataframe(table_rows, use_container_width=True)
+
+    # --- Section 5: Discretionary contracts ---
+    if discretionary:
+        st.subheader("Discretionary contracts")
+        for c in discretionary:
+            with st.container(border=True):
+                st.markdown("**{}**".format(c["title"]))
+                cols = st.columns(4)
+                cols[0].markdown("**Vendor**  \n{}".format(c.get("vendor", "?")))
+                cols[1].markdown("**Agency**  \n{}".format(c.get("agency", "?")))
+                cols[2].markdown("**Amount**  \n${}".format(c.get("amount", "?")))
+                cols[3].markdown("**Status**  \n{}".format(c.get("status", "?")))
+                st.markdown("Term: {} -> {}".format(c.get("start", "?"),
+                                                    c.get("end", "?")))
+                if c.get("url"):
+                    st.markdown("[View on Databook.nyc]({})".format(c["url"]))
+
+    # --- Section 6: All contracts table ---
+    if contracts:
+        st.subheader("All contracts found")
+        contract_rows = []
+        for c in contracts:
+            contract_rows.append({
+                "Title": c.get("title", "?"),
+                "Vendor": c.get("vendor", "?"),
+                "Agency": c.get("agency", "?"),
+                "Amount": "${}".format(c.get("amount", "?")),
+                "Status": c.get("status", "?"),
+                "Start": c.get("start", "?"),
+                "End": c.get("end", "?"),
+                "Databook": c.get("url", ""),
+            })
+        st.dataframe(contract_rows, use_container_width=True)
+
+    # --- Section 7: Sources ---
+    st.divider()
+    with st.expander("Sources and methodology"):
+        st.markdown(
+            "**Search term used:** `{}`\n\n"
+            "**Data sources:**\n\n"
+            "1. **BetaNYC New-York-City-Budget** — combined Schedule C awards. "
+            "[GitHub repo](https://github.com/BetaNYC/New-York-City-Budget)\n\n"
+            "2. **Databook.nyc** — MCP server joining MOCS contracts to "
+            "Checkbook NYC payments. [databook.nyc](https://databook.nyc)\n\n"
+            "3. **MOCS Discretionary Award Tracker** — official status of "
+            "each discretionary award. [Open the tracker]({})\n\n"
+            "4. **NYC Council roster** — member-to-district mapping. "
+            "[council.nyc.gov](https://council.nyc.gov/districts/)\n\n"
+            "**Known limitations:**\n\n"
+            "- Parsing defect in source data. BetaNYC documents an open "
+            "issue where some Schedule C award rows lose their boundaries "
+            "during PDF extraction. Cross-check against official sources.\n"
+            "- The `member` field is a surname only. The mapping table "
+            "resolves it to a full name and district.\n"
+            "- Some awards have a blank `member` field. These are usually "
+            "Citywide Initiatives or fiscal sponsor awards.\n"
+            "- Databook.nyc is a third-party service. If it is down, "
+            "contract lookups will fail.\n"
+            "- The MOCS Tracker is updated roughly every six weeks."
+            .format(org_query, MOCS_TRACKER_URL)
+        )
+else:
+    st.info("Enter a nonprofit name above to begin.")
