@@ -394,5 +394,10 @@ if org_query:
                 )
 
         st.markdown("---")
-        st.markdown(
-            "**Check Official Award Status** 
+            # --- MOCS tracker reference ---
+        st.info(
+            f"**Check official award status.** The MOCS Discretionary Award "
+            f"Tracker is the authoritative source for whether an award has "
+            f"been cleared. [Open the MOCS Tracker]({MOCS_TRACKER_URL}) and "
+            f"search by EIN or organization name."
+    )
