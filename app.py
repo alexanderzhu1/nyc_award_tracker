@@ -311,12 +311,16 @@ def trace_nonprofit(org_query):
 
     try:
         client = get_mcp_client()
+        st.write("DEBUG vendor_query =", repr(vendor_query))
         contract_resp = client.call_tool("search_contracts", {
             "vendor": vendor_query,
             "limit": 25,
         })
         contract_text = client.extract_text(contract_resp)
+        st.write("DEBUG contract_text length =", len(contract_text))
+        st.write("DEBUG contract_text head =", contract_text[:200])
         result["contracts"] = parse_contract_blocks(contract_text)
+        st.write("DEBUG parsed contracts =", len(result["contracts"]))
     except Exception as e:
         st.warning("Contract lookup failed: {}".format(e))
 
