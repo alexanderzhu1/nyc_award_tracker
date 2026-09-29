@@ -176,7 +176,7 @@ def get_mcp_client():
 
 
 # ------------------------------------------------------------------
-# MATCHING HELPER
+# MATCHING HELPERS
 # ------------------------------------------------------------------
 def rank_organizations(all_orgs, query, limit=4):
     if not query:
@@ -198,9 +198,6 @@ def rank_organizations(all_orgs, query, limit=4):
     return ordered[:limit]
 
 
-# ------------------------------------------------------------------
-# TRACE LOGIC
-# ------------------------------------------------------------------
 def _normalize_name(s):
     """Normalize an organization name for matching."""
     s = (s or "").upper().strip()
@@ -214,38 +211,33 @@ def _normalize_name(s):
     return s.strip()
 
 
+# ------------------------------------------------------------------
+# TRACE LOGIC
+# ------------------------------------------------------------------
 def find_awards(rows, org_query):
     """
     Find awards matching the organization query.
-    Strips common prefixes like 'The ' and handles case differences.
-    Falls back to a token-based match if no exact substring match is found.
+    Primary strategy is token-based matching: a row matches if all
+    significant tokens (>2 chars) from the query appear anywhere in
+    the row's organization name (case-insensitive). This handles
+    prefixes, suffixes, slashes, and word-order differences.
     """
     normalized_query = _normalize_name(org_query)
     if not normalized_query:
         return []
 
-    # First pass: exact normalized substring match
-    exact_matches = []
-    for r in rows:
-        org = _normalize_name(r.get("organization"))
-        if normalized_query in org:
-            exact_matches.append(r)
-
-    if exact_matches:
-        return exact_matches
-
-    # Second pass: token-based match (all significant tokens must appear)
     query_tokens = [t for t in normalized_query.split() if len(t) > 2]
     if not query_tokens:
-        return []
+        # Fall back to substring for very short queries
+        return [r for r in rows
+                if normalized_query in _normalize_name(r.get("organization"))]
 
-    token_matches = []
+    matches = []
     for r in rows:
         org = _normalize_name(r.get("organization"))
         if all(token in org for token in query_tokens):
-            token_matches.append(r)
-
-    return token_matches
+            matches.append(r)
+    return matches
 
 
 def resolve_district(member):
@@ -308,10 +300,19 @@ def trace_nonprofit(org_query):
     if len(resolved) < 2 and len(member_totals) >= 1:
         result["single_member_warning"] = True
 
+    # Send a shortened vendor string to Databook so substring matching
+    # is robust to "THE" prefixes and corporate suffixes.
+    normalized = _normalize_name(org_query)
+    vendor_tokens = [t for t in normalized.split() if len(t) > 2]
+    if len(vendor_tokens) >= 2:
+        vendor_query = " ".join(vendor_tokens[:2])
+    else:
+        vendor_query = normalized or org_query
+
     try:
         client = get_mcp_client()
         contract_resp = client.call_tool("search_contracts", {
-            "vendor": org_query,
+            "vendor": vendor_query,
             "limit": 25,
         })
         contract_text = client.extract_text(contract_resp)
@@ -455,10 +456,11 @@ if typed and not matches:
         "Try a shorter or different spelling."
     )
 elif matches:
+    # Dynamic key avoids stale selection across different searches.
     selected_org = st.selectbox(
         "Matching organizations ({} found)".format(len(matches)),
         options=matches,
-        key="org_select",
+        key="org_select_{}".format(len(matches)),
     )
 elif not typed:
     st.caption("Start typing above to see matching organizations.")
