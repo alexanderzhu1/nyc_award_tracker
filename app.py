@@ -15,6 +15,7 @@ import io
 import re
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 # ------------------------------------------------------------------
 # CONFIG
@@ -159,7 +160,6 @@ def load_betanyc_awards():
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_all_organizations():
-    """Return a sorted, deduplicated list of organization names."""
     rows = load_betanyc_awards()
     names = set()
     for r in rows:
@@ -177,48 +177,215 @@ def get_mcp_client():
 
 
 # ------------------------------------------------------------------
-# SEARCH / MATCH HELPERS
+# CUSTOM COMPONENT: JS AUTOCOMPLETE DROPDOWN
 # ------------------------------------------------------------------
-def rank_organizations(all_orgs, query, limit=20):
+def org_autocomplete(organizations, key="org_autocomplete"):
     """
-    Rank organizations by relevance to the query.
-    Priority order:
-      1. Exact match (case-insensitive)
-      2. Starts with query
-      3. Contains full query as a substring
-      4. Contains all query tokens (in any order)
+    Render a real HTML/JS autocomplete input.
+    Returns the currently selected organization name, or None.
     """
-    if not query:
-        return []
-    q = query.upper().strip()
-    tokens = [t for t in q.split() if t]
+    orgs_json = json.dumps(organizations)
 
-    exact = []
-    starts = []
-    contains = []
-    tokens_match = []
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body {
+          margin: 0;
+          font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+        }
+        #wrap {
+          position: relative;
+          width: 100%;
+        }
+        #search {
+          width: 100%;
+          padding: 10px 12px;
+          font-size: 16px;
+          border: 1px solid #ccc;
+          border-radius: 6px;
+          box-sizing: border-box;
+          outline: none;
+        }
+        #search:focus {
+          border-color: #ff4b4b;
+          box-shadow: 0 0 0 2px rgba(255,75,75,0.15);
+        }
+        #list {
+          position: absolute;
+          top: 100%;
+          left: 0;
+          right: 0;
+          max-height: 320px;
+          overflow-y: auto;
+          background: white;
+          border: 1px solid #ccc;
+          border-top: none;
+          border-radius: 0 0 6px 6px;
+          z-index: 1000;
+          display: none;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        .item {
+          padding: 10px 12px;
+          cursor: pointer;
+          font-size: 15px;
+          border-bottom: 1px solid #f0f0f0;
+        }
+        .item:last-child { border-bottom: none; }
+        .item:hover, .item.active {
+          background: #ffeaea;
+          color: #c0392b;
+        }
+        .item mark {
+          background: #fff3b0;
+          font-weight: bold;
+          padding: 0 2px;
+        }
+        .empty {
+          padding: 10px 12px;
+          color: #888;
+          font-size: 14px;
+        }
+      </style>
+    </head>
+    <body>
+      <div id="wrap">
+        <input id="search" type="text" placeholder="Start typing a nonprofit name..." autocomplete="off" />
+        <div id="list"></div>
+      </div>
+      <script>
+        const ORGS = __ORGS__;
+        const input = document.getElementById('search');
+        const list = document.getElementById('list');
+        let activeIndex = -1;
+        let currentMatches = [];
 
-    for org in all_orgs:
-        u = org.upper()
-        if u == q:
-            exact.append(org)
-        elif u.startswith(q):
-            starts.append(org)
-        elif q in u:
-            contains.append(org)
-        elif tokens and all(t in u for t in tokens):
-            tokens_match.append(org)
+        function escapeHtml(s) {
+          return s.replace(/[&<>"']/g, c => ({
+            '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+          }[c]));
+        }
 
-    ordered = exact + starts + contains + tokens_match
-    seen = set()
-    result = []
-    for org in ordered:
-        if org not in seen:
-            seen.add(org)
-            result.append(org)
-        if len(result) >= limit:
-            break
-    return result
+        function highlight(org, query) {
+          if (!query) return escapeHtml(org);
+          const idx = org.toUpperCase().indexOf(query.toUpperCase());
+          if (idx === -1) return escapeHtml(org);
+          return escapeHtml(org.slice(0, idx))
+            + '<mark>' + escapeHtml(org.slice(idx, idx + query.length)) + '</mark>'
+            + escapeHtml(org.slice(idx + query.length));
+        }
+
+        function rankOrgs(query, limit) {
+          if (!query) return [];
+          const q = query.toUpperCase().trim();
+          const tokens = q.split(/\\s+/).filter(Boolean);
+          const exact = [], starts = [], contains = [], tokensMatch = [];
+          for (const org of ORGS) {
+            const u = org.toUpperCase();
+            if (u === q) exact.push(org);
+            else if (u.startsWith(q)) starts.push(org);
+            else if (u.includes(q)) contains.push(org);
+            else if (tokens.length && tokens.every(t => u.includes(t))) tokensMatch.push(org);
+          }
+          return exact.concat(starts, contains, tokensMatch).slice(0, limit);
+        }
+
+        function render(matches, query) {
+          list.innerHTML = '';
+          if (!matches.length) {
+            list.innerHTML = '<div class="empty">No matches</div>';
+            list.style.display = 'block';
+            return;
+          }
+          matches.forEach((org, i) => {
+            const div = document.createElement('div');
+            div.className = 'item' + (i === activeIndex ? ' active' : '');
+            div.innerHTML = highlight(org, query);
+            div.addEventListener('mousedown', (e) => {
+              e.preventDefault();
+              select(org);
+            });
+            list.appendChild(div);
+          });
+          list.style.display = 'block';
+        }
+
+        function select(org) {
+          input.value = org;
+          list.style.display = 'none';
+          activeIndex = -1;
+          sendValue(org);
+        }
+
+        function sendValue(value) {
+          window.parent.postMessage({
+            isStreamlitMessage: true,
+            type: 'streamlit:setComponentValue',
+            value: value,
+          }, '*');
+        }
+
+        input.addEventListener('input', () => {
+          const query = input.value;
+          if (!query) {
+            list.style.display = 'none';
+            sendValue(null);
+            return;
+          }
+          currentMatches = rankOrgs(query, 50);
+          activeIndex = -1;
+          render(currentMatches, query);
+        });
+
+        input.addEventListener('keydown', (e) => {
+          if (list.style.display === 'none') return;
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            activeIndex = Math.min(activeIndex + 1, currentMatches.length - 1);
+            render(currentMatches, input.value);
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            activeIndex = Math.max(activeIndex - 1, 0);
+            render(currentMatches, input.value);
+          } else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (activeIndex >= 0) select(currentMatches[activeIndex]);
+            else if (currentMatches.length) select(currentMatches[0]);
+          } else if (e.key === 'Escape') {
+            list.style.display = 'none';
+          }
+        });
+
+        input.addEventListener('blur', () => {
+          setTimeout(() => { list.style.display = 'none'; }, 150);
+        });
+
+        // Streamlit component handshake
+        function sendReady() {
+          window.parent.postMessage({
+            isStreamlitMessage: true,
+            type: 'streamlit:componentReady',
+            apiVersion: 1,
+          }, '*');
+        }
+        function setFrameHeight(h) {
+          window.parent.postMessage({
+            isStreamlitMessage: true,
+            type: 'streamlit:setFrameHeight',
+            height: h || document.body.scrollHeight,
+          }, '*');
+        }
+        sendReady();
+        setFrameHeight(80);
+        window.addEventListener('resize', () => setFrameHeight(80));
+      </script>
+    </body>
+    </html>
+    """.replace("__ORGS__", orgs_json)
+
+    return components.html(html, height=80, scrolling=False)
 
 
 # ------------------------------------------------------------------
@@ -417,38 +584,20 @@ with st.expander("How to use this", expanded=False):
         """
     )
 
-# ------------------------------------------------------------------
-# ORGANIZATION PICKER
-# ------------------------------------------------------------------
 st.markdown("### Find a nonprofit")
 
-org_input = st.text_input(
-    "Start typing a nonprofit name",
-    placeholder="e.g., Center for Community, Bronx Defenders...",
-    key="org_input",
-).strip()
+# The dropdown component. It writes its value into session_state
+# under "selected_org" via postMessage.
+all_orgs = get_all_organizations()
+org_autocomplete(all_orgs, key="org_autocomplete")
 
-if org_input:
-    all_orgs = get_all_organizations()
-    matches = rank_organizations(all_orgs, org_input, limit=20)
+selected_org = st.session_state.get("selected_org")
 
-    if not matches:
-        st.warning(
-            "No organizations in the source data match that text. "
-            "Try a shorter or different spelling."
-        )
-        selected_org = None
-    else:
-        selected_org = st.selectbox(
-            "Matching organizations ({} found)".format(len(matches)),
-            options=matches,
-            key="org_select",
-        )
+if selected_org:
+    st.success("Selected: **{}**".format(selected_org))
 else:
-    selected_org = None
-    st.caption("Start typing above to see matching organizations.")
+    st.caption("Start typing to see matching organizations.")
 
-# --- Confirm button ---
 trace_clicked = st.button(
     "Trace this organization",
     type="primary",
@@ -500,7 +649,6 @@ if trace_clicked and selected_org:
         "or organization name.".format(MOCS_TRACKER_URL)
     )
 
-    # --- Council Members ---
     if members:
         st.subheader("Council Members tied to these awards")
         st.caption(
@@ -529,14 +677,11 @@ if trace_clicked and selected_org:
                 st.markdown("**{}**  \n{}".format(title, subtitle))
 
             if rest:
-                with st.expander(
-                    "Show {} more member(s)".format(len(rest))
-                ):
+                with st.expander("Show {} more member(s)".format(len(rest))):
                     for m in rest:
                         title, subtitle = member_display(m)
                         st.markdown("**{}**  \n{}".format(title, subtitle))
 
-    # --- Unattributed awards ---
     if unattributed:
         total_un = sum(parse_amount(a.get("amount")) for a in unattributed)
         st.subheader("Awards not attributed to a specific Member")
@@ -554,7 +699,6 @@ if trace_clicked and selected_org:
                 agency = a.get("agency", "?")
                 st.markdown("- FY{} — ${} — {}".format(year, amount, agency))
 
-    # --- Award records table ---
     if awards:
         st.subheader("Award records")
         table_rows = []
@@ -569,7 +713,6 @@ if trace_clicked and selected_org:
             })
         st.dataframe(table_rows, use_container_width=True)
 
-    # --- Discretionary contracts cards ---
     if discretionary:
         st.subheader("Discretionary contracts")
         for c in discretionary:
@@ -585,7 +728,6 @@ if trace_clicked and selected_org:
                 if c.get("url"):
                     st.markdown("[View on Databook.nyc]({})".format(c["url"]))
 
-    # --- All contracts table ---
     if contracts:
         st.subheader("All contracts found")
         contract_rows = []
@@ -602,7 +744,6 @@ if trace_clicked and selected_org:
             })
         st.dataframe(contract_rows, use_container_width=True)
 
-    # --- Sources ---
     st.divider()
     with st.expander("Sources and methodology"):
         st.markdown(
