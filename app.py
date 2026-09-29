@@ -179,11 +179,6 @@ def get_mcp_client():
 # MATCHING HELPER
 # ------------------------------------------------------------------
 def rank_organizations(all_orgs, query, limit=4):
-    """
-    Rank organizations by relevance to the query.
-    Returns at most `limit` matches (default 4).
-    Priority: exact > starts-with > contains > all tokens.
-    """
     if not query:
         return []
     q = query.upper().strip()
@@ -206,9 +201,51 @@ def rank_organizations(all_orgs, query, limit=4):
 # ------------------------------------------------------------------
 # TRACE LOGIC
 # ------------------------------------------------------------------
+def _normalize_name(s):
+    """Normalize an organization name for matching."""
+    s = (s or "").upper().strip()
+    for prefix in ["THE ", "A ", "AN "]:
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+    for suffix in [", INC.", " INC.", ", INC", " INC",
+                   " INCORPORATED", ", LTD.", " LTD."]:
+        if s.endswith(suffix):
+            s = s[:-len(suffix)]
+    return s.strip()
+
+
 def find_awards(rows, org_query):
-    needle = org_query.upper()
-    return [r for r in rows if needle in (r.get("organization") or "").upper()]
+    """
+    Find awards matching the organization query.
+    Strips common prefixes like 'The ' and handles case differences.
+    Falls back to a token-based match if no exact substring match is found.
+    """
+    normalized_query = _normalize_name(org_query)
+    if not normalized_query:
+        return []
+
+    # First pass: exact normalized substring match
+    exact_matches = []
+    for r in rows:
+        org = _normalize_name(r.get("organization"))
+        if normalized_query in org:
+            exact_matches.append(r)
+
+    if exact_matches:
+        return exact_matches
+
+    # Second pass: token-based match (all significant tokens must appear)
+    query_tokens = [t for t in normalized_query.split() if len(t) > 2]
+    if not query_tokens:
+        return []
+
+    token_matches = []
+    for r in rows:
+        org = _normalize_name(r.get("organization"))
+        if all(token in org for token in query_tokens):
+            token_matches.append(r)
+
+    return token_matches
 
 
 def resolve_district(member):
@@ -239,10 +276,6 @@ def trace_nonprofit(org_query):
 
     rows = load_betanyc_awards()
     awards = find_awards(rows, org_query)
-    if not awards:
-        words = [w for w in org_query.upper().split() if len(w) > 3]
-        if words:
-            awards = find_awards(rows, words[0])
     result["awards"] = awards
 
     member_totals = {}
@@ -409,7 +442,6 @@ typed = st.text_input(
     key="typed_org",
 ).strip()
 
-# Rank matches for the dropdown (top 4)
 if typed:
     matches = rank_organizations(all_orgs, typed, limit=4)
 else:
