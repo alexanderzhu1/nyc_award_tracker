@@ -177,12 +177,13 @@ def get_mcp_client():
 
 
 # ------------------------------------------------------------------
-# CUSTOM COMPONENT: JS AUTOCOMPLETE DROPDOWN
+# CUSTOM COMPONENT: JS AUTOCOMPLETE DROPDOWN (top 4 matches)
 # ------------------------------------------------------------------
 def org_autocomplete(organizations, key="org_autocomplete"):
     """
     Render a real HTML/JS autocomplete input.
-    Returns the currently selected organization name, or None.
+    Shows at most the top 4 ranked matches.
+    Sends the selected organization back to Streamlit via postMessage.
     """
     orgs_json = json.dumps(organizations)
 
@@ -217,7 +218,7 @@ def org_autocomplete(organizations, key="org_autocomplete"):
           top: 100%;
           left: 0;
           right: 0;
-          max-height: 320px;
+          max-height: 220px;
           overflow-y: auto;
           background: white;
           border: 1px solid #ccc;
@@ -277,7 +278,7 @@ def org_autocomplete(organizations, key="org_autocomplete"):
             + escapeHtml(org.slice(idx + query.length));
         }
 
-        function rankOrgs(query, limit) {
+        function rankOrgs(query) {
           if (!query) return [];
           const q = query.toUpperCase().trim();
           const tokens = q.split(/\\s+/).filter(Boolean);
@@ -289,7 +290,7 @@ def org_autocomplete(organizations, key="org_autocomplete"):
             else if (u.includes(q)) contains.push(org);
             else if (tokens.length && tokens.every(t => u.includes(t))) tokensMatch.push(org);
           }
-          return exact.concat(starts, contains, tokensMatch).slice(0, limit);
+          return exact.concat(starts, contains, tokensMatch).slice(0, 4);
         }
 
         function render(matches, query) {
@@ -334,7 +335,7 @@ def org_autocomplete(organizations, key="org_autocomplete"):
             sendValue(null);
             return;
           }
-          currentMatches = rankOrgs(query, 50);
+          currentMatches = rankOrgs(query);
           activeIndex = -1;
           render(currentMatches, query);
         });
@@ -362,7 +363,6 @@ def org_autocomplete(organizations, key="org_autocomplete"):
           setTimeout(() => { list.style.display = 'none'; }, 150);
         });
 
-        // Streamlit component handshake
         function sendReady() {
           window.parent.postMessage({
             isStreamlitMessage: true,
@@ -586,8 +586,6 @@ with st.expander("How to use this", expanded=False):
 
 st.markdown("### Find a nonprofit")
 
-# The dropdown component. It writes its value into session_state
-# under "selected_org" via postMessage.
 all_orgs = get_all_organizations()
 org_autocomplete(all_orgs, key="org_autocomplete")
 
