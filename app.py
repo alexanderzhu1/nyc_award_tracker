@@ -88,10 +88,6 @@ class DatabookMCPClient:
         return self.request_id
 
     def _parse_sse(self, text):
-        """
-        Parse an SSE response. Prefer the chunk that contains a
-        JSON-RPC result or error, not the first arbitrary data line.
-        """
         parsed = []
         for line in text.splitlines():
             if line.startswith("data: "):
@@ -145,14 +141,10 @@ class DatabookMCPClient:
         return self._parse_sse(r.text)
 
     def extract_text(self, response):
-        """
-        Extract text from an MCP tool response, handling all response shapes.
-        """
         if not response:
             return ""
         if isinstance(response, str):
             return response
-        # Standard MCP shape: result.content[0].text
         try:
             content = response.get("result", {}).get("content", [])
             for item in content:
@@ -162,10 +154,8 @@ class DatabookMCPClient:
                         return text
         except Exception:
             pass
-        # Error response
         if isinstance(response, dict) and "error" in response:
             return "ERROR: {}".format(response["error"])
-        # Fallback: dump whatever we got so the debug output is useful
         try:
             return json.dumps(response)
         except Exception:
@@ -198,8 +188,12 @@ def get_all_organizations():
     return sorted(names)
 
 
-@st.cache_resource(show_spinner=False)
 def get_mcp_client():
+    """
+    Create and initialize a fresh MCP client.
+    Databook sessions expire, so we do not cache the client across
+    requests. The cost is one extra initialize round-trip per trace.
+    """
     client = DatabookMCPClient(DATABOOK_MCP_URL)
     client.initialize()
     return client
@@ -229,7 +223,6 @@ def rank_organizations(all_orgs, query, limit=4):
 
 
 def _normalize_name(s):
-    """Normalize an organization name for matching."""
     s = (s or "").upper().strip()
     for prefix in ["THE ", "A ", "AN "]:
         if s.startswith(prefix):
@@ -245,12 +238,6 @@ def _normalize_name(s):
 # TRACE LOGIC
 # ------------------------------------------------------------------
 def find_awards(rows, org_query):
-    """
-    Find awards matching the organization query.
-    Primary strategy is token-based matching: a row matches if all
-    significant tokens (>2 chars) from the query appear anywhere in
-    the row's organization name (case-insensitive).
-    """
     normalized_query = _normalize_name(org_query)
     if not normalized_query:
         return []
@@ -328,9 +315,7 @@ def trace_nonprofit(org_query):
     if len(resolved) < 2 and len(member_totals) >= 1:
         result["single_member_warning"] = True
 
-    # Build a vendor query for Databook. Truncate to the first two
-    # significant tokens so substring matching is robust to prefixes
-    # and suffixes, but keep the full name if it's short.
+    # Build vendor query for Databook
     normalized = _normalize_name(org_query)
     vendor_tokens = [t for t in normalized.split() if len(t) > 2]
     if len(vendor_tokens) >= 2:
@@ -339,23 +324,30 @@ def trace_nonprofit(org_query):
         vendor_query = normalized or org_query
 
     try:
-        client = get_mcp_client()
         st.write("DEBUG vendor_query =", repr(vendor_query))
+
+        client = get_mcp_client()
         contract_resp = client.call_tool("search_contracts", {
             "vendor": vendor_query,
             "limit": 25,
         })
-        st.write("DEBUG contract_resp type =", type(contract_resp).__name__)
-        if isinstance(contract_resp, dict):
-            st.write("DEBUG contract_resp keys =", list(contract_resp.keys()))
-            st.write("DEBUG contract_resp preview =",
-                     str(contract_resp)[:500])
-        else:
-            st.write("DEBUG contract_resp =", str(contract_resp)[:500])
+
+        # Retry once if the session expired
+        if isinstance(contract_resp, dict) and "error" in contract_resp:
+            err = contract_resp.get("error", {})
+            err_msg = err.get("message", "") if isinstance(err, dict) else str(err)
+            if "session" in err_msg.lower():
+                st.write("DEBUG retrying with fresh session ...")
+                client = get_mcp_client()
+                contract_resp = client.call_tool("search_contracts", {
+                    "vendor": vendor_query,
+                    "limit": 25,
+                })
+
+        st.write("DEBUG contract_resp preview =", str(contract_resp)[:300])
 
         contract_text = client.extract_text(contract_resp)
         st.write("DEBUG contract_text length =", len(contract_text))
-        st.write("DEBUG contract_text head =", contract_text[:200])
 
         result["contracts"] = parse_contract_blocks(contract_text)
         st.write("DEBUG parsed contracts =", len(result["contracts"]))
