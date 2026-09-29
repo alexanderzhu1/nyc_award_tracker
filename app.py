@@ -15,7 +15,6 @@ import io
 import re
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 
 # ------------------------------------------------------------------
 # CONFIG
@@ -177,215 +176,31 @@ def get_mcp_client():
 
 
 # ------------------------------------------------------------------
-# CUSTOM COMPONENT: JS AUTOCOMPLETE DROPDOWN (top 4 matches)
+# MATCHING HELPER
 # ------------------------------------------------------------------
-def org_autocomplete(organizations, key="org_autocomplete"):
+def rank_organizations(all_orgs, query, limit=4):
     """
-    Render a real HTML/JS autocomplete input.
-    Shows at most the top 4 ranked matches.
-    Sends the selected organization back to Streamlit via postMessage.
+    Rank organizations by relevance to the query.
+    Returns at most `limit` matches (default 4).
+    Priority: exact > starts-with > contains > all tokens.
     """
-    orgs_json = json.dumps(organizations)
-
-    html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body {
-          margin: 0;
-          font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
-        }
-        #wrap {
-          position: relative;
-          width: 100%;
-        }
-        #search {
-          width: 100%;
-          padding: 10px 12px;
-          font-size: 16px;
-          border: 1px solid #ccc;
-          border-radius: 6px;
-          box-sizing: border-box;
-          outline: none;
-        }
-        #search:focus {
-          border-color: #ff4b4b;
-          box-shadow: 0 0 0 2px rgba(255,75,75,0.15);
-        }
-        #list {
-          position: absolute;
-          top: 100%;
-          left: 0;
-          right: 0;
-          max-height: 220px;
-          overflow-y: auto;
-          background: white;
-          border: 1px solid #ccc;
-          border-top: none;
-          border-radius: 0 0 6px 6px;
-          z-index: 1000;
-          display: none;
-          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }
-        .item {
-          padding: 10px 12px;
-          cursor: pointer;
-          font-size: 15px;
-          border-bottom: 1px solid #f0f0f0;
-        }
-        .item:last-child { border-bottom: none; }
-        .item:hover, .item.active {
-          background: #ffeaea;
-          color: #c0392b;
-        }
-        .item mark {
-          background: #fff3b0;
-          font-weight: bold;
-          padding: 0 2px;
-        }
-        .empty {
-          padding: 10px 12px;
-          color: #888;
-          font-size: 14px;
-        }
-      </style>
-    </head>
-    <body>
-      <div id="wrap">
-        <input id="search" type="text" placeholder="Start typing a nonprofit name..." autocomplete="off" />
-        <div id="list"></div>
-      </div>
-      <script>
-        const ORGS = __ORGS__;
-        const input = document.getElementById('search');
-        const list = document.getElementById('list');
-        let activeIndex = -1;
-        let currentMatches = [];
-
-        function escapeHtml(s) {
-          return s.replace(/[&<>"']/g, c => ({
-            '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-          }[c]));
-        }
-
-        function highlight(org, query) {
-          if (!query) return escapeHtml(org);
-          const idx = org.toUpperCase().indexOf(query.toUpperCase());
-          if (idx === -1) return escapeHtml(org);
-          return escapeHtml(org.slice(0, idx))
-            + '<mark>' + escapeHtml(org.slice(idx, idx + query.length)) + '</mark>'
-            + escapeHtml(org.slice(idx + query.length));
-        }
-
-        function rankOrgs(query) {
-          if (!query) return [];
-          const q = query.toUpperCase().trim();
-          const tokens = q.split(/\\s+/).filter(Boolean);
-          const exact = [], starts = [], contains = [], tokensMatch = [];
-          for (const org of ORGS) {
-            const u = org.toUpperCase();
-            if (u === q) exact.push(org);
-            else if (u.startsWith(q)) starts.push(org);
-            else if (u.includes(q)) contains.push(org);
-            else if (tokens.length && tokens.every(t => u.includes(t))) tokensMatch.push(org);
-          }
-          return exact.concat(starts, contains, tokensMatch).slice(0, 4);
-        }
-
-        function render(matches, query) {
-          list.innerHTML = '';
-          if (!matches.length) {
-            list.innerHTML = '<div class="empty">No matches</div>';
-            list.style.display = 'block';
-            return;
-          }
-          matches.forEach((org, i) => {
-            const div = document.createElement('div');
-            div.className = 'item' + (i === activeIndex ? ' active' : '');
-            div.innerHTML = highlight(org, query);
-            div.addEventListener('mousedown', (e) => {
-              e.preventDefault();
-              select(org);
-            });
-            list.appendChild(div);
-          });
-          list.style.display = 'block';
-        }
-
-        function select(org) {
-          input.value = org;
-          list.style.display = 'none';
-          activeIndex = -1;
-          sendValue(org);
-        }
-
-        function sendValue(value) {
-          window.parent.postMessage({
-            isStreamlitMessage: true,
-            type: 'streamlit:setComponentValue',
-            value: value,
-          }, '*');
-        }
-
-        input.addEventListener('input', () => {
-          const query = input.value;
-          if (!query) {
-            list.style.display = 'none';
-            sendValue(null);
-            return;
-          }
-          currentMatches = rankOrgs(query);
-          activeIndex = -1;
-          render(currentMatches, query);
-        });
-
-        input.addEventListener('keydown', (e) => {
-          if (list.style.display === 'none') return;
-          if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            activeIndex = Math.min(activeIndex + 1, currentMatches.length - 1);
-            render(currentMatches, input.value);
-          } else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            activeIndex = Math.max(activeIndex - 1, 0);
-            render(currentMatches, input.value);
-          } else if (e.key === 'Enter') {
-            e.preventDefault();
-            if (activeIndex >= 0) select(currentMatches[activeIndex]);
-            else if (currentMatches.length) select(currentMatches[0]);
-          } else if (e.key === 'Escape') {
-            list.style.display = 'none';
-          }
-        });
-
-        input.addEventListener('blur', () => {
-          setTimeout(() => { list.style.display = 'none'; }, 150);
-        });
-
-        function sendReady() {
-          window.parent.postMessage({
-            isStreamlitMessage: true,
-            type: 'streamlit:componentReady',
-            apiVersion: 1,
-          }, '*');
-        }
-        function setFrameHeight(h) {
-          window.parent.postMessage({
-            isStreamlitMessage: true,
-            type: 'streamlit:setFrameHeight',
-            height: h || document.body.scrollHeight,
-          }, '*');
-        }
-        sendReady();
-        setFrameHeight(80);
-        window.addEventListener('resize', () => setFrameHeight(80));
-      </script>
-    </body>
-    </html>
-    """.replace("__ORGS__", orgs_json)
-
-    return components.html(html, height=80, scrolling=False)
+    if not query:
+        return []
+    q = query.upper().strip()
+    tokens = [t for t in q.split() if t]
+    exact, starts, contains, tokens_match = [], [], [], []
+    for org in all_orgs:
+        u = org.upper()
+        if u == q:
+            exact.append(org)
+        elif u.startswith(q):
+            starts.append(org)
+        elif q in u:
+            contains.append(org)
+        elif tokens and all(t in u for t in tokens):
+            tokens_match.append(org)
+    ordered = exact + starts + contains + tokens_match
+    return ordered[:limit]
 
 
 # ------------------------------------------------------------------
@@ -587,14 +402,34 @@ with st.expander("How to use this", expanded=False):
 st.markdown("### Find a nonprofit")
 
 all_orgs = get_all_organizations()
-org_autocomplete(all_orgs, key="org_autocomplete")
 
-selected_org = st.session_state.get("selected_org")
+typed = st.text_input(
+    "Start typing a nonprofit name",
+    placeholder="e.g., Center for Community, Bronx Defenders...",
+    key="typed_org",
+).strip()
 
-if selected_org:
-    st.success("Selected: **{}**".format(selected_org))
+# Rank matches for the dropdown (top 4)
+if typed:
+    matches = rank_organizations(all_orgs, typed, limit=4)
 else:
-    st.caption("Start typing to see matching organizations.")
+    matches = []
+
+selected_org = None
+
+if typed and not matches:
+    st.warning(
+        "No organizations in the source data match that text. "
+        "Try a shorter or different spelling."
+    )
+elif matches:
+    selected_org = st.selectbox(
+        "Matching organizations ({} found)".format(len(matches)),
+        options=matches,
+        key="org_select",
+    )
+elif not typed:
+    st.caption("Start typing above to see matching organizations.")
 
 trace_clicked = st.button(
     "Trace this organization",
