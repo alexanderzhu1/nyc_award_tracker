@@ -191,8 +191,8 @@ def get_all_organizations():
 def get_mcp_client():
     """
     Create and initialize a fresh MCP client.
-    Databook sessions expire, so we do not cache the client across
-    requests. The cost is one extra initialize round-trip per trace.
+    Databook sessions expire, so we do not cache the client.
+    One extra initialize round-trip per trace.
     """
     client = DatabookMCPClient(DATABOOK_MCP_URL)
     client.initialize()
@@ -324,8 +324,6 @@ def trace_nonprofit(org_query):
         vendor_query = normalized or org_query
 
     try:
-        st.write("DEBUG vendor_query =", repr(vendor_query))
-
         client = get_mcp_client()
         contract_resp = client.call_tool("search_contracts", {
             "vendor": vendor_query,
@@ -337,20 +335,14 @@ def trace_nonprofit(org_query):
             err = contract_resp.get("error", {})
             err_msg = err.get("message", "") if isinstance(err, dict) else str(err)
             if "session" in err_msg.lower():
-                st.write("DEBUG retrying with fresh session ...")
                 client = get_mcp_client()
                 contract_resp = client.call_tool("search_contracts", {
                     "vendor": vendor_query,
                     "limit": 25,
                 })
 
-        st.write("DEBUG contract_resp preview =", str(contract_resp)[:300])
-
         contract_text = client.extract_text(contract_resp)
-        st.write("DEBUG contract_text length =", len(contract_text))
-
         result["contracts"] = parse_contract_blocks(contract_text)
-        st.write("DEBUG parsed contracts =", len(result["contracts"]))
     except Exception as e:
         st.warning("Contract lookup failed: {}".format(e))
 
