@@ -157,11 +157,68 @@ def load_betanyc_awards():
         return []
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_all_organizations():
+    """Return a sorted, deduplicated list of organization names."""
+    rows = load_betanyc_awards()
+    names = set()
+    for r in rows:
+        org = (r.get("organization") or "").strip()
+        if org:
+            names.add(org)
+    return sorted(names)
+
+
 @st.cache_resource(show_spinner=False)
 def get_mcp_client():
     client = DatabookMCPClient(DATABOOK_MCP_URL)
     client.initialize()
     return client
+
+
+# ------------------------------------------------------------------
+# SEARCH / MATCH HELPERS
+# ------------------------------------------------------------------
+def rank_organizations(all_orgs, query, limit=20):
+    """
+    Rank organizations by relevance to the query.
+    Priority order:
+      1. Exact match (case-insensitive)
+      2. Starts with query
+      3. Contains full query as a substring
+      4. Contains all query tokens (in any order)
+    """
+    if not query:
+        return []
+    q = query.upper().strip()
+    tokens = [t for t in q.split() if t]
+
+    exact = []
+    starts = []
+    contains = []
+    tokens_match = []
+
+    for org in all_orgs:
+        u = org.upper()
+        if u == q:
+            exact.append(org)
+        elif u.startswith(q):
+            starts.append(org)
+        elif q in u:
+            contains.append(org)
+        elif tokens and all(t in u for t in tokens):
+            tokens_match.append(org)
+
+    ordered = exact + starts + contains + tokens_match
+    seen = set()
+    result = []
+    for org in ordered:
+        if org not in seen:
+            seen.add(org)
+            result.append(org)
+        if len(result) >= limit:
+            break
+    return result
 
 
 # ------------------------------------------------------------------
@@ -302,7 +359,6 @@ def is_discretionary(contract):
 
 
 def member_display(m):
-    """Return (title, subtitle) for a member entry."""
     info = m["info"]
     if info:
         title = "{} — District {} ({})".format(
@@ -315,7 +371,6 @@ def member_display(m):
 
 
 def member_matches_search(m, query):
-    """True if the member entry matches the query string."""
     if not query:
         return True
     q = query.upper().strip()
@@ -354,25 +409,61 @@ with st.expander("How to use this", expanded=False):
         contract and the payments recorded in Checkbook NYC.
 
         **How to use it:**
-        1. Type a nonprofit name in the box below.
-        2. Press Enter.
-        3. Read the results, top to bottom.
+        1. Start typing a nonprofit name in the box below.
+        2. Pick the matching organization from the dropdown.
+        3. Click **Trace this organization**.
         4. Use the search box in the Council Members section to filter
-           by name, district, or borough.
+           by member name, district, or borough.
         """
     )
 
-org_query = st.text_input(
-    "Nonprofit name",
-    placeholder="e.g., Center for Community Alternatives",
+# ------------------------------------------------------------------
+# ORGANIZATION PICKER
+# ------------------------------------------------------------------
+st.markdown("### Find a nonprofit")
+
+org_input = st.text_input(
+    "Start typing a nonprofit name",
+    placeholder="e.g., Center for Community, Bronx Defenders...",
+    key="org_input",
 ).strip()
 
-if org_query:
-    with st.spinner("Tracing award -> contract -> payments..."):
-        result = trace_nonprofit(org_query)
+if org_input:
+    all_orgs = get_all_organizations()
+    matches = rank_organizations(all_orgs, org_input, limit=20)
 
-    # --- Section 1: Summary ---
-    st.subheader("Summary")
+    if not matches:
+        st.warning(
+            "No organizations in the source data match that text. "
+            "Try a shorter or different spelling."
+        )
+        selected_org = None
+    else:
+        selected_org = st.selectbox(
+            "Matching organizations ({} found)".format(len(matches)),
+            options=matches,
+            key="org_select",
+        )
+else:
+    selected_org = None
+    st.caption("Start typing above to see matching organizations.")
+
+# --- Confirm button ---
+trace_clicked = st.button(
+    "Trace this organization",
+    type="primary",
+    disabled=(selected_org is None),
+)
+
+# ------------------------------------------------------------------
+# TRACE AND RESULTS
+# ------------------------------------------------------------------
+if trace_clicked and selected_org:
+    with st.spinner("Tracing award -> contract -> payments..."):
+        result = trace_nonprofit(selected_org)
+
+    st.markdown("---")
+    st.markdown("## Results for **{}**".format(selected_org))
 
     awards = result["awards"]
     contracts = result["contracts"]
@@ -387,12 +478,12 @@ if org_query:
 
     if not awards and not contracts:
         st.warning(
-            "No results found. Try a shorter search term, or check the "
-            "spelling of the nonprofit's legal name."
+            "No results found for this organization. This can happen "
+            "when the organization appears in the source data under a "
+            "slightly different legal name."
         )
         st.stop()
 
-    # --- Completeness warning ---
     if result["single_member_warning"]:
         st.warning(
             "Data completeness note: The BetaNYC dataset only shows one "
@@ -402,7 +493,6 @@ if org_query:
             "Discretionary Award Tracker for the complete list."
         )
 
-    # --- MOCS tracker reference ---
     st.info(
         "Check official award status. The MOCS Discretionary Award "
         "Tracker is the authoritative source for whether an award has "
@@ -410,7 +500,7 @@ if org_query:
         "or organization name.".format(MOCS_TRACKER_URL)
     )
 
-    # --- Section 2: Council Members ---
+    # --- Council Members ---
     if members:
         st.subheader("Council Members tied to these awards")
         st.caption(
@@ -446,7 +536,7 @@ if org_query:
                         title, subtitle = member_display(m)
                         st.markdown("**{}**  \n{}".format(title, subtitle))
 
-    # --- Section 3: Unattributed awards ---
+    # --- Unattributed awards ---
     if unattributed:
         total_un = sum(parse_amount(a.get("amount")) for a in unattributed)
         st.subheader("Awards not attributed to a specific Member")
@@ -464,7 +554,7 @@ if org_query:
                 agency = a.get("agency", "?")
                 st.markdown("- FY{} — ${} — {}".format(year, amount, agency))
 
-    # --- Section 4: Award records table ---
+    # --- Award records table ---
     if awards:
         st.subheader("Award records")
         table_rows = []
@@ -479,7 +569,7 @@ if org_query:
             })
         st.dataframe(table_rows, use_container_width=True)
 
-    # --- Section 5: Discretionary contracts cards ---
+    # --- Discretionary contracts cards ---
     if discretionary:
         st.subheader("Discretionary contracts")
         for c in discretionary:
@@ -495,7 +585,7 @@ if org_query:
                 if c.get("url"):
                     st.markdown("[View on Databook.nyc]({})".format(c["url"]))
 
-    # --- Section 6: All contracts table ---
+    # --- All contracts table ---
     if contracts:
         st.subheader("All contracts found")
         contract_rows = []
@@ -512,7 +602,7 @@ if org_query:
             })
         st.dataframe(contract_rows, use_container_width=True)
 
-    # --- Section 7: Sources ---
+    # --- Sources ---
     st.divider()
     with st.expander("Sources and methodology"):
         st.markdown(
@@ -537,7 +627,5 @@ if org_query:
             "- Databook.nyc is a third-party service. If it is down, "
             "contract lookups will fail.\n"
             "- The MOCS Tracker is updated roughly every six weeks."
-            .format(org_query, MOCS_TRACKER_URL)
+            .format(selected_org, MOCS_TRACKER_URL)
         )
-else:
-    st.info("Enter a nonprofit name above to begin.")
