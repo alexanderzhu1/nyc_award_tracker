@@ -29,6 +29,19 @@ MOCS_TRACKER_URL = (
     "discretionary-award-tracker.page"
 )
 
+# Tokens that are too common to be useful as identifying words.
+# These get dropped when building the "distinctive" query.
+STOPWORDS = {
+    "CENTER", "CENTRE", "FOR", "THE", "AND", "OF", "INC", "INCORPORATED",
+    "CORP", "CORPORATION", "LLC", "LTD", "CO", "COMPANY", "SERVICES",
+    "SERVICE", "SERV", "NEW", "YORK", "CITY", "NYC", "FUND", "FOUNDATION",
+    "INSTITUTE", "ASSOCIATION", "ASSOC", "SOCIETY", "GROUP", "PROGRAM",
+    "PROJECT", "INITIATIVE", "COALITION", "ALLIANCE", "NETWORK",
+    "COMMUNITY", "DEVELOPMENT", "HOUSING", "HEALTH", "MENTAL", "HYGIENE",
+    "SOCIAL", "HUMAN", "FAMILY", "CHILDREN", "YOUTH", "SENIOR", "ADULT",
+    "LEGAL", "AID", "URBAN", "PUBLIC", "GENERAL",
+}
+
 COUNCIL_MEMBER_DISTRICTS = {
     "DE LA ROSA":     {"full_name": "Carmen De La Rosa",    "district": 10, "borough": "Manhattan/Bronx"},
     "RIVERA":         {"full_name": "Carlina Rivera",       "district": 2,  "borough": "Manhattan"},
@@ -188,12 +201,34 @@ def get_all_organizations():
     return sorted(names)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_token_frequencies():
+    """
+    Count how many distinct organizations contain each token.
+    A token like CENTER appears in hundreds of orgs. A token like
+    HOPE appears in very few. The distinctive tokens are the ones
+    with the lowest frequencies.
+    """
+    rows = load_betanyc_awards()
+    orgs = set()
+    for r in rows:
+        org = _normalize_name(r.get("organization"))
+        if org:
+            orgs.add(org)
+    freq = {}
+    for org in orgs:
+        seen_tokens = set()
+        for token in org.split():
+            if len(token) < 3:
+                continue
+            if token in seen_tokens:
+                continue
+            seen_tokens.add(token)
+            freq[token] = freq.get(token, 0) + 1
+    return freq
+
+
 def get_mcp_client():
-    """
-    Create and initialize a fresh MCP client.
-    Databook sessions expire, so we do not cache the client.
-    One extra initialize round-trip per trace.
-    """
     client = DatabookMCPClient(DATABOOK_MCP_URL)
     client.initialize()
     return client
@@ -234,23 +269,61 @@ def _normalize_name(s):
     return s.strip()
 
 
+def distinctive_tokens(org_query, freq, max_tokens=1):
+    """
+    Return the least common tokens from the query.
+    Drops stopwords and tokens that appear in more than 5% of orgs.
+    Returns up to max_tokens tokens, in the order they appear.
+    """
+    normalized = _normalize_name(org_query)
+    tokens = [t for t in normalized.split() if len(t) > 2]
+    if not tokens:
+        return []
+
+    total_orgs = max(1, sum(1 for _ in freq))  # number of distinct tokens
+    # Simpler: use the maximum frequency observed as the denominator
+    max_freq = max(freq.values()) if freq else 1
+    threshold = max_freq * 0.05  # tokens appearing in >5% of orgs are too common
+
+    candidates = []
+    for t in tokens:
+        f = freq.get(t, 0)
+        if f > threshold:
+            continue
+        if t in STOPWORDS:
+            continue
+        candidates.append((f, t))
+
+    if not candidates:
+        # Fall back to the longest token
+        candidates = [(0, max(tokens, key=len))]
+
+    candidates.sort()
+    return [t for _, t in candidates[:max_tokens]]
+
+
 # ------------------------------------------------------------------
 # TRACE LOGIC
 # ------------------------------------------------------------------
-def find_awards(rows, org_query):
+def find_awards(rows, org_query, freq):
+    """
+    Find awards matching the organization query.
+    Requires the distinctive tokens from the query to appear in the
+    row's organization name. This eliminates the false positives from
+    common words like CENTER or SERVICES.
+    """
     normalized_query = _normalize_name(org_query)
     if not normalized_query:
         return []
 
-    query_tokens = [t for t in normalized_query.split() if len(t) > 2]
-    if not query_tokens:
-        return [r for r in rows
-                if normalized_query in _normalize_name(r.get("organization"))]
+    must_have = distinctive_tokens(org_query, freq, max_tokens=2)
+    if not must_have:
+        return []
 
     matches = []
     for r in rows:
         org = _normalize_name(r.get("organization"))
-        if all(token in org for token in query_tokens):
+        if all(token in org for token in must_have):
             matches.append(r)
     return matches
 
@@ -282,7 +355,8 @@ def trace_nonprofit(org_query):
     }
 
     rows = load_betanyc_awards()
-    awards = find_awards(rows, org_query)
+    freq = get_token_frequencies()
+    awards = find_awards(rows, org_query, freq)
     result["awards"] = awards
 
     member_totals = {}
@@ -315,13 +389,17 @@ def trace_nonprofit(org_query):
     if len(resolved) < 2 and len(member_totals) >= 1:
         result["single_member_warning"] = True
 
-    # Build vendor query for Databook
-    normalized = _normalize_name(org_query)
-    vendor_tokens = [t for t in normalized.split() if len(t) > 2]
-    if len(vendor_tokens) >= 2:
-        vendor_query = " ".join(vendor_tokens[:2])
+    # Build a vendor query for Databook using the most distinctive
+    # token from the organization name. This is what stops "CENTER
+    # FOR HOPE SERVICES" from matching every "CENTER FOR X" contract.
+    vendor_tokens = distinctive_tokens(org_query, freq, max_tokens=1)
+    if vendor_tokens:
+        vendor_query = vendor_tokens[0]
     else:
-        vendor_query = normalized or org_query
+        # Fall back to the last significant word if no distinctive token
+        normalized = _normalize_name(org_query)
+        parts = [t for t in normalized.split() if len(t) > 2]
+        vendor_query = parts[-1] if parts else org_query
 
     try:
         client = get_mcp_client()
@@ -330,7 +408,6 @@ def trace_nonprofit(org_query):
             "limit": 25,
         })
 
-        # Retry once if the session expired
         if isinstance(contract_resp, dict) and "error" in contract_resp:
             err = contract_resp.get("error", {})
             err_msg = err.get("message", "") if isinstance(err, dict) else str(err)
@@ -342,7 +419,19 @@ def trace_nonprofit(org_query):
                 })
 
         contract_text = client.extract_text(contract_resp)
-        result["contracts"] = parse_contract_blocks(contract_text)
+        raw_contracts = parse_contract_blocks(contract_text)
+
+        # Client-side filter: only keep contracts whose vendor name
+        # actually contains all significant tokens from the query.
+        query_tokens = [t for t in _normalize_name(org_query).split()
+                        if len(t) > 2]
+        filtered = []
+        for c in raw_contracts:
+            v = (c.get("vendor") or "").upper()
+            if all(t in v for t in query_tokens if t not in STOPWORDS):
+                filtered.append(c)
+        # If filtering removed everything, fall back to the unfiltered list
+        result["contracts"] = filtered if filtered else raw_contracts
     except Exception as e:
         st.warning("Contract lookup failed: {}".format(e))
 
