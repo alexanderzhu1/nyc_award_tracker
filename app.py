@@ -339,14 +339,10 @@ def trace_nonprofit(org_query):
     if len(resolved) < 2 and len(member_totals) >= 1:
         result["single_member_warning"] = True
 
-    # Build the Databook query from ALL meaningful tokens of the org
-    # name. Requiring both HOPE and SERVICES eliminates "Hope of Israel"
-    # and any other org that shares only one word.
-    must_have = meaningful_tokens(org_query)
-    if must_have:
-        vendor_query = " ".join(must_have)
-    else:
-        vendor_query = _normalize_name(org_query) or org_query
+    # Send the FULL normalized name to Databook. It does substring
+    # matching, so "CENTER FOR HOPE SERVICES" only matches the vendor
+    # whose name literally contains that substring.
+    vendor_query = _normalize_name(org_query) or org_query
 
     try:
         client = get_mcp_client()
@@ -368,8 +364,9 @@ def trace_nonprofit(org_query):
         contract_text = client.extract_text(contract_resp)
         raw_contracts = parse_contract_blocks(contract_text)
 
-        # Client-side safety filter: drop any contract whose vendor
-        # name does not contain EVERY meaningful token from the query.
+        # Client-side safety filter: keep only contracts whose vendor
+        # name contains every meaningful token from the query.
+        must_have = meaningful_tokens(org_query)
         if must_have:
             filtered = []
             for c in raw_contracts:
