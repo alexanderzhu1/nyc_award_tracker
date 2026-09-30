@@ -29,20 +29,6 @@ MOCS_TRACKER_URL = (
     "discretionary-award-tracker.page"
 )
 
-# Common organization words that add no identifying information.
-# These are dropped when building search queries and when checking
-# whether a returned contract actually belongs to the target org.
-STOPWORDS = {
-    "CENTER", "CENTRE", "FOR", "THE", "AND", "OF", "INC", "INCORPORATED",
-    "CORP", "CORPORATION", "LLC", "LTD", "CO", "COMPANY", "SERVICES",
-    "SERVICE", "SERV", "NEW", "YORK", "CITY", "NYC", "FUND", "FOUNDATION",
-    "INSTITUTE", "ASSOCIATION", "ASSOC", "SOCIETY", "GROUP", "PROGRAM",
-    "PROJECT", "INITIATIVE", "COALITION", "ALLIANCE", "NETWORK",
-    "COMMUNITY", "DEVELOPMENT", "HOUSING", "HEALTH", "MENTAL", "HYGIENE",
-    "SOCIAL", "HUMAN", "FAMILY", "CHILDREN", "YOUTH", "SENIOR", "ADULT",
-    "URBAN", "PUBLIC", "GENERAL",
-}
-
 COUNCIL_MEMBER_DISTRICTS = {
     "DE LA ROSA":     {"full_name": "Carmen De La Rosa",    "district": 10, "borough": "Manhattan/Bronx"},
     "RIVERA":         {"full_name": "Carlina Rivera",       "district": 2,  "borough": "Manhattan"},
@@ -232,24 +218,27 @@ def rank_organizations(all_orgs, query, limit=4):
 
 
 def _normalize_name(s):
+    """Uppercase, strip leading articles, strip corporate suffixes."""
     s = (s or "").upper().strip()
     for prefix in ["THE ", "A ", "AN "]:
         if s.startswith(prefix):
             s = s[len(prefix):]
     for suffix in [", INC.", " INC.", ", INC", " INC",
-                   " INCORPORATED", ", LTD.", " LTD."]:
+                   " INCORPORATED", ", LTD.", " LTD.", " CORP.", " CORP",
+                   " LLC", ", LLC", " L.L.C.", ", L.L.C."]:
         if s.endswith(suffix):
             s = s[:-len(suffix)]
     return s.strip()
 
 
-def meaningful_tokens(s):
+def _strip_slashes_and_punct(s):
     """
-    Return the tokens of a name that carry identifying information.
-    Drops stopwords and short tokens.
+    Turn slashes, dashes, commas, and multiple spaces into single spaces.
+    Used for a secondary equality pass when comparing names.
     """
-    normalized = _normalize_name(s)
-    return [t for t in normalized.split() if len(t) > 2 and t not in STOPWORDS]
+    s = re.sub(r"[/\\,;:\-]+", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
 
 
 # ------------------------------------------------------------------
@@ -257,26 +246,60 @@ def meaningful_tokens(s):
 # ------------------------------------------------------------------
 def find_awards(rows, org_query):
     """
-    Match rows only if ALL meaningful tokens of the query appear
-    somewhere in the row's organization name. This is strict: a row
-    must contain 'HOPE' AND 'SERVICES' (for 'Center for Hope Services')
-    to match, not just one of them.
-    """
-    must_have = meaningful_tokens(org_query)
-    if not must_have:
-        # Fall back to a substring test on the normalized name
-        normalized = _normalize_name(org_query)
-        if not normalized:
-            return []
-        return [r for r in rows
-                if normalized in _normalize_name(r.get("organization"))]
+    Match rows in the BetaNYC CSV.
 
-    matches = []
+    Strategy, in order of strictness:
+      1. Normalized exact equality of the full name.
+      2. Normalized full name appears as a substring of the row's
+         name (allows suffixes like "/ Civil Division").
+      3. Normalized full name appears as a substring after stripping
+         punctuation (handles slashes and commas).
+      4. If nothing matched, fall back to requiring all significant
+         tokens to appear (last resort for messy CSV rows).
+
+    This strict-first approach prevents 'Center for Hope Services'
+    from matching unrelated orgs that merely share the token 'HOPE'.
+    """
+    normalized_query = _normalize_name(org_query)
+    if not normalized_query:
+        return []
+
+    query_nopunct = _strip_slashes_and_punct(normalized_query)
+
+    exact = []
+    substring = []
+    nopunct = []
+
     for r in rows:
         org = _normalize_name(r.get("organization"))
-        if all(token in org for token in must_have):
-            matches.append(r)
-    return matches
+        if not org:
+            continue
+        if org == normalized_query:
+            exact.append(r)
+        elif normalized_query in org:
+            substring.append(r)
+        else:
+            org_nopunct = _strip_slashes_and_punct(org)
+            if query_nopunct and query_nopunct in org_nopunct:
+                nopunct.append(r)
+
+    if exact:
+        return exact
+    if substring:
+        return substring
+    if nopunct:
+        return nopunct
+
+    # Last-resort token match. Only used when the strict passes fail.
+    query_tokens = [t for t in normalized_query.split() if len(t) > 2]
+    if not query_tokens:
+        return []
+    token_matches = []
+    for r in rows:
+        org = _normalize_name(r.get("organization"))
+        if all(t in org for t in query_tokens):
+            token_matches.append(r)
+    return token_matches
 
 
 def resolve_district(member):
@@ -339,9 +362,7 @@ def trace_nonprofit(org_query):
     if len(resolved) < 2 and len(member_totals) >= 1:
         result["single_member_warning"] = True
 
-    # Send the FULL normalized name to Databook. It does substring
-    # matching, so "CENTER FOR HOPE SERVICES" only matches the vendor
-    # whose name literally contains that substring.
+    # Send the full normalized name to Databook.
     vendor_query = _normalize_name(org_query) or org_query
 
     try:
@@ -364,18 +385,26 @@ def trace_nonprofit(org_query):
         contract_text = client.extract_text(contract_resp)
         raw_contracts = parse_contract_blocks(contract_text)
 
-        # Client-side safety filter: keep only contracts whose vendor
-        # name contains every meaningful token from the query.
-        must_have = meaningful_tokens(org_query)
-        if must_have:
-            filtered = []
-            for c in raw_contracts:
-                v = (c.get("vendor") or "").upper()
-                if all(t in v for t in must_have):
-                    filtered.append(c)
-            result["contracts"] = filtered
-        else:
-            result["contracts"] = raw_contracts
+        # Strict client-side filter: the returned vendor's normalized
+        # name must equal the query, or contain the query as a
+        # substring after punctuation stripping.
+        query_nopunct = _strip_slashes_and_punct(vendor_query)
+        filtered = []
+        for c in raw_contracts:
+            v = _normalize_name(c.get("vendor"))
+            if not v:
+                continue
+            if v == vendor_query:
+                filtered.append(c)
+                continue
+            if vendor_query and vendor_query in v:
+                filtered.append(c)
+                continue
+            v_nopunct = _strip_slashes_and_punct(v)
+            if query_nopunct and query_nopunct in v_nopunct:
+                filtered.append(c)
+
+        result["contracts"] = filtered
     except Exception as e:
         st.warning("Contract lookup failed: {}".format(e))
 
