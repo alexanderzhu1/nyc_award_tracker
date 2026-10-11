@@ -433,7 +433,7 @@ def trace_nonprofit(org_query):
         member = (a.get("member") or "").strip()
         amount = parse_amount(a.get("amount"))
 
-        if member and member != "?":
+    if member and member != "?":
             if member not in member_totals:
                 info = resolve_member(member)
                 member_totals[member] = {
@@ -444,8 +444,8 @@ def trace_nonprofit(org_query):
                 }
             member_totals[member]["total"] += amount
             member_totals[member]["count"] += 1
-        else:
-            unattributed.append(a)
+    else:
+        unattributed.append(a)
 
     result["members"] = sorted(
         member_totals.values(), key=lambda x: x["total"], reverse=True
