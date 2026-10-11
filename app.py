@@ -952,3 +952,143 @@ if trace_clicked and selected_org:
 else:
     st.info("Enter a nonprofit name above to begin.")
 
+# ------------------------------------------------------------------
+# DATA SOURCE URLS
+# ------------------------------------------------------------------
+BETANYC_MAIN_URL = (
+    "https://raw.githubusercontent.com/BetaNYC/"
+    "New-York-City-Budget/main/data/combined/all_years_awards.csv"
+)
+BETANYC_ABSORBED_URL = (
+    "https://raw.githubusercontent.com/BetaNYC/"
+    "New-York-City-Budget/main/data/recovered/schedule_c_absorbed_awards.csv"
+)
+BETANYC_APPENDIX_URL = (
+    "https://raw.githubusercontent.com/BetaNYC/"
+    "New-York-City-Budget/main/data/recovered/schedule_c_appendix_recovered.csv"
+)
+
+
+# ------------------------------------------------------------------
+# NORMALIZATION HELPERS
+# ------------------------------------------------------------------
+def _normalize_fy_to_short(raw):
+    """
+    Convert any fiscal year representation to a two-digit string.
+    Accepts: 'FY24', '24', '2024', 24, '2024.0'.
+    Returns: '24' or '' if unparseable.
+    """
+    if raw is None:
+        return ""
+    s = str(raw).strip().upper()
+    s = s.replace("FY", "").strip()
+    if not s:
+        return ""
+    # Drop trailing .0 from float-y values
+    if s.endswith(".0"):
+        s = s[:-2]
+    try:
+        n = int(float(s))
+    except (ValueError, TypeError):
+        return ""
+    if n >= 1000:
+        # full year like 2024 -> short 24
+        n = n % 100
+    return "{:02d}".format(n)
+
+
+def _normalize_row(raw_row):
+    """
+    Map a raw CSV row from any of the three sources into the app's
+    internal shape. Returns None if the row is unusable.
+    """
+    # Determine fiscal year
+    year_raw = raw_row.get("year") or raw_row.get("fiscal_year")
+    year_short = _normalize_fy_to_short(year_raw)
+    if not year_short:
+        return None
+
+    org = (raw_row.get("organization") or "").strip()
+    if not org:
+        return None
+
+    member = (raw_row.get("member") or "").strip()
+    program = (raw_row.get("program") or "").strip()
+    ein = (raw_row.get("ein") or "").strip()
+    agency = (raw_row.get("agency") or "").strip()
+    purpose = (raw_row.get("purpose") or "").strip()
+
+    # Amount: keep as string so downstream parse_amount works
+    amount_raw = raw_row.get("amount") or ""
+    amount = str(amount_raw).strip()
+
+    return {
+        "year": "FY{}".format(year_short),
+        "member": member,
+        "organization": org,
+        "program": program,
+        "ein": ein,
+        "amount": amount,
+        "agency": agency,
+        "purpose": purpose,
+    }
+
+
+def _row_key(row):
+    """Deduplication key for a normalized row."""
+    def clean(s):
+        return (s or "").upper().strip()
+    amt = parse_amount(row.get("amount"))
+    return (
+        clean(row.get("year")),
+        clean(row.get("ein")),
+        round(amt, 2),
+        clean(row.get("member")),
+        clean(row.get("organization")),
+    )
+
+
+# ------------------------------------------------------------------
+# COMBINED DATA LOADER
+# ------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_betanyc_awards():
+    """
+    Load and merge all three BetaNYC award sources:
+      1. data/combined/all_years_awards.csv  (main)
+      2. data/recovered/schedule_c_absorbed_awards.csv
+      3. data/recovered/schedule_c_appendix_recovered.csv
+
+    Normalizes each into a common shape, deduplicates, and returns
+    a single list.
+    """
+    all_rows = []
+    seen_keys = set()
+    stats = {"main": 0, "absorbed": 0, "appendix": 0, "dupes": 0}
+
+    for url, label in [
+        (BETANYC_MAIN_URL, "main"),
+        (BETANYC_ABSORBED_URL, "absorbed"),
+        (BETANYC_APPENDIX_URL, "appendix"),
+    ]:
+        try:
+            r = requests.get(url, timeout=180)
+            r.raise_for_status()
+            reader = csv.DictReader(io.StringIO(r.text))
+            for raw in reader:
+                row = _normalize_row(raw)
+                if not row:
+                    continue
+                k = _row_key(row)
+                if k in seen_keys:
+                    stats["dupes"] += 1
+                    continue
+                seen_keys.add(k)
+                all_rows.append(row)
+                stats[label] += 1
+        except Exception as e:
+            st.warning("Could not load {} awards: {}".format(label, e))
+
+    # Store stats for the UI to display
+    load_betanyc_awards._stats = stats
+    return all_rows
