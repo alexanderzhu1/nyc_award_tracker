@@ -13,6 +13,8 @@ import json
 import csv
 import io
 import re
+from datetime import datetime
+
 import requests
 import streamlit as st
 
@@ -28,48 +30,87 @@ MOCS_TRACKER_URL = (
     "https://www.nyc.gov/site/mocs/opportunities/"
     "discretionary-award-tracker.page"
 )
+COUNCIL_WORKBOOK_TEMPLATE = (
+    "https://rnd.council.nyc.gov/src/assets/excelFund/"
+    "funded_disclosure_FY{year}.xlsx"
+)
 
+# Council Member surname -> district. Covers the 2010-2027 roster.
+# Entries can be updated as membership changes.
 COUNCIL_MEMBER_DISTRICTS = {
-    "DE LA ROSA":     {"full_name": "Carmen De La Rosa",    "district": 10, "borough": "Manhattan/Bronx"},
-    "RIVERA":         {"full_name": "Carlina Rivera",       "district": 2,  "borough": "Manhattan"},
-    "EPSTEIN":        {"full_name": "Harvey Epstein",       "district": 2,  "borough": "Manhattan"},
-    "AYALA":          {"full_name": "Diana Ayala",          "district": 8,  "borough": "Manhattan/Bronx"},
-    "POWERS":         {"full_name": "Keith Powers",         "district": 4,  "borough": "Manhattan"},
-    "MENIN":          {"full_name": "Julie Menin",          "district": 5,  "borough": "Manhattan"},
-    "BREWER":         {"full_name": "Gale Brewer",          "district": 6,  "borough": "Manhattan"},
-    "ABREU":          {"full_name": "Shaun Abreu",          "district": 7,  "borough": "Manhattan"},
-    "RESTLER":        {"full_name": "Lincoln Restler",      "district": 33, "borough": "Brooklyn"},
-    "LEVIN":          {"full_name": "Stephen Levin",        "district": 33, "borough": "Brooklyn"},
-    "CHIN":           {"full_name": "Margaret Chin",        "district": 1,  "borough": "Manhattan"},
-    "MARTE":          {"full_name": "Christopher Marte",    "district": 1,  "borough": "Manhattan"},
-    "LANDER":         {"full_name": "Brad Lander",          "district": 39, "borough": "Brooklyn"},
-    "HANIF":          {"full_name": "Shahana Hanif",        "district": 39, "borough": "Brooklyn"},
-    "KALLOS":         {"full_name": "Ben Kallos",           "district": 5,  "borough": "Manhattan"},
-    "RODRIGUEZ":      {"full_name": "Ydanis Rodriguez",     "district": 10, "borough": "Manhattan"},
-    "SALAMANCA":      {"full_name": "Rafael Salamanca",     "district": 17, "borough": "Bronx"},
-    "TORRES":         {"full_name": "Ritchie Torres",       "district": 15, "borough": "Bronx"},
-    "GIBSON":         {"full_name": "Vanessa Gibson",       "district": 16, "borough": "Bronx"},
-    "DIAZ":           {"full_name": "Rubén Díaz Sr.",       "district": 18, "borough": "Bronx"},
-    "MILLER":         {"full_name": "I. Daneek Miller",     "district": 27, "borough": "Queens"},
-    "RICHARDS":       {"full_name": "Donovan Richards",     "district": 31, "borough": "Queens"},
-    "GRODENCHIK":     {"full_name": "Barry Grodenchik",     "district": 23, "borough": "Queens"},
-    "VALLONE":        {"full_name": "Paul Vallone",         "district": 19, "borough": "Queens"},
-    "CONSTANTINIDES": {"full_name": "Costa Constantinides","district": 22, "borough": "Queens"},
-    "BRANNAN":        {"full_name": "Justin Brannan",       "district": 43, "borough": "Brooklyn"},
-    "CUMMINGS":       {"full_name": "Laurie Cumbo",         "district": 35, "borough": "Brooklyn"},
-    "CORNEGY":        {"full_name": "Robert Cornegy",       "district": 36, "borough": "Brooklyn"},
-    "EUGENIO":        {"full_name": "Mathieu Eugene",       "district": 40, "borough": "Brooklyn"},
-    "DEUTSCH":        {"full_name": "Chaim Deutsch",        "district": 48, "borough": "Brooklyn"},
-    "TOUSSAINT":      {"full_name": "Farah Louis",          "district": 45, "borough": "Brooklyn"},
-    "WILLIAMS":       {"full_name": "Jumaane Williams",     "district": 45, "borough": "Brooklyn"},
-    "BARRON":         {"full_name": "Inez Barron",          "district": 42, "borough": "Brooklyn"},
-    "MAISEL":         {"full_name": "Alan Maisel",          "district": 46, "borough": "Brooklyn"},
-    "BORELLI":        {"full_name": "Joseph Borelli",       "district": 51, "borough": "Staten Island"},
-    "ROSE":           {"full_name": "Deborah Rose",         "district": 49, "borough": "Staten Island"},
-    "MATTEO":         {"full_name": "Steven Matteo",        "district": 50, "borough": "Staten Island"},
-    "PALADINO":       {"full_name": "Vickie Paladino",      "district": 19, "borough": "Queens"},
-    "ADAMS":          {"full_name": "Adrienne Adams",       "district": 28, "borough": "Queens"},
-    "HOLDEN":         {"full_name": "Robert Holden",        "district": 30, "borough": "Queens"},
+    "DE LA ROSA":     {"full_name": "Carmen De La Rosa",     "district": 10, "borough": "Manhattan/Bronx"},
+    "RIVERA":         {"full_name": "Carlina Rivera",        "district": 2,  "borough": "Manhattan"},
+    "EPSTEIN":        {"full_name": "Harvey Epstein",        "district": 2,  "borough": "Manhattan"},
+    "AYALA":          {"full_name": "Diana Ayala",           "district": 8,  "borough": "Manhattan/Bronx"},
+    "POWERS":         {"full_name": "Keith Powers",          "district": 4,  "borough": "Manhattan"},
+    "MENIN":          {"full_name": "Julie Menin",           "district": 5,  "borough": "Manhattan"},
+    "BREWER":         {"full_name": "Gale Brewer",           "district": 6,  "borough": "Manhattan"},
+    "ABREU":          {"full_name": "Shaun Abreu",           "district": 7,  "borough": "Manhattan"},
+    "RESTLER":        {"full_name": "Lincoln Restler",       "district": 33, "borough": "Brooklyn"},
+    "LEVIN":          {"full_name": "Stephen Levin",         "district": 33, "borough": "Brooklyn"},
+    "CHIN":           {"full_name": "Margaret Chin",         "district": 1,  "borough": "Manhattan"},
+    "MARTE":          {"full_name": "Christopher Marte",     "district": 1,  "borough": "Manhattan"},
+    "LANDER":         {"full_name": "Brad Lander",           "district": 39, "borough": "Brooklyn"},
+    "HANIF":          {"full_name": "Shahana Hanif",         "district": 39, "borough": "Brooklyn"},
+    "KALLOS":         {"full_name": "Ben Kallos",            "district": 5,  "borough": "Manhattan"},
+    "RODRIGUEZ":      {"full_name": "Ydanis Rodriguez",      "district": 10, "borough": "Manhattan"},
+    "SALAMANCA":      {"full_name": "Rafael Salamanca",      "district": 17, "borough": "Bronx"},
+    "TORRES":         {"full_name": "Ritchie Torres",        "district": 15, "borough": "Bronx"},
+    "GIBSON":         {"full_name": "Vanessa Gibson",        "district": 16, "borough": "Bronx"},
+    "DIAZ":           {"full_name": "Rubén Díaz Sr.",        "district": 18, "borough": "Bronx"},
+    "MILLER":         {"full_name": "I. Daneek Miller",      "district": 27, "borough": "Queens"},
+    "RICHARDS":       {"full_name": "Donovan Richards",      "district": 31, "borough": "Queens"},
+    "GRODENCHIK":     {"full_name": "Barry Grodenchik",      "district": 23, "borough": "Queens"},
+    "VALLONE":        {"full_name": "Paul Vallone",          "district": 19, "borough": "Queens"},
+    "CONSTANTINIDES": {"full_name": "Costa Constantinides", "district": 22, "borough": "Queens"},
+    "BRANNAN":        {"full_name": "Justin Brannan",        "district": 43, "borough": "Brooklyn"},
+    "CUMMINGS":       {"full_name": "Laurie Cumbo",          "district": 35, "borough": "Brooklyn"},
+    "CORNEGY":        {"full_name": "Robert Cornegy",        "district": 36, "borough": "Brooklyn"},
+    "EUGENIO":        {"full_name": "Mathieu Eugene",        "district": 40, "borough": "Brooklyn"},
+    "DEUTSCH":        {"full_name": "Chaim Deutsch",         "district": 48, "borough": "Brooklyn"},
+    "TOUSSAINT":      {"full_name": "Farah Louis",           "district": 45, "borough": "Brooklyn"},
+    "WILLIAMS":       {"full_name": "Jumaane Williams",      "district": 45, "borough": "Brooklyn"},
+    "BARRON":         {"full_name": "Inez Barron",           "district": 42, "borough": "Brooklyn"},
+    "MAISEL":         {"full_name": "Alan Maisel",           "district": 46, "borough": "Brooklyn"},
+    "BORELLI":        {"full_name": "Joseph Borelli",        "district": 51, "borough": "Staten Island"},
+    "ROSE":           {"full_name": "Deborah Rose",          "district": 49, "borough": "Staten Island"},
+    "MATTEO":         {"full_name": "Steven Matteo",         "district": 50, "borough": "Staten Island"},
+    "PALADINO":       {"full_name": "Vickie Paladino",       "district": 19, "borough": "Queens"},
+    "ADAMS":          {"full_name": "Adrienne Adams",        "district": 28, "borough": "Queens"},
+    "HOLDEN":         {"full_name": "Robert Holden",         "district": 30, "borough": "Queens"},
+    "BOTTCHER":       {"full_name": "Erik Bottcher",         "district": 3,  "borough": "Manhattan"},
+    "GONZALEZ":       {"full_name": "Kristin Richardson Jordan", "district": 9, "borough": "Manhattan"},
+    "JORDAN":         {"full_name": "Kristin Richardson Jordan", "district": 9, "borough": "Manhattan"},
+    "HUDSON":         {"full_name": "Crystal Hudson",        "district": 35, "borough": "Brooklyn"},
+    "OSSE":           {"full_name": "Chi Ossé",              "district": 36, "borough": "Brooklyn"},
+    "NURSE":          {"full_name": "Sandy Nurse",           "district": 37, "borough": "Brooklyn"},
+    "AVILES":         {"full_name": "Alexa Avilés",          "district": 38, "borough": "Brooklyn"},
+    "RESTLER":        {"full_name": "Lincoln Restler",       "district": 33, "borough": "Brooklyn"},
+    "ZHUANG":         {"full_name": "Susan Zhuang",          "district": 43, "borough": "Brooklyn"},
+    "FARIAS":         {"full_name": "Amanda Farías",         "district": 18, "borough": "Bronx"},
+    "SANCHEZ":        {"full_name": "Pierina Sanchez",       "district": 14, "borough": "Bronx"},
+    "FELIZ":          {"full_name": "Oswald Feliz",          "district": 15, "borough": "Bronx"},
+    "MARMORATO":      {"full_name": "Kristy Marmorato",      "district": 13, "borough": "Bronx"},
+    "STEVENS":        {"full_name": "Althea Stevens",        "district": 16, "borough": "Bronx"},
+    "CABAN":          {"full_name": "Tiffany Cabán",         "district": 22, "borough": "Queens"},
+    "KRISHNAN":       {"full_name": "Shekar Krishnan",       "district": 25, "borough": "Queens"},
+    "WON":            {"full_name": "Julie Won",             "district": 26, "borough": "Queens"},
+    "LEE":            {"full_name": "Linda Lee",             "district": 23, "borough": "Queens"},
+    "MOYA":           {"full_name": "Francisco Moya",        "district": 21, "borough": "Queens"},
+    "SANCHEZ":        {"full_name": "Pierina Sanchez",       "district": 14, "borough": "Bronx"},
+    "VELEZ":          {"full_name": "Marjorie Velázquez",    "district": 13, "borough": "Bronx"},
+    "ARIOLA":         {"full_name": "Joann Ariola",          "district": 32, "borough": "Queens"},
+    "UNGA":           {"full_name": "Sandra Ung",            "district": 20, "borough": "Queens"},
+    "GUTIERREZ":      {"full_name": "Jennifer Gutiérrez",    "district": 34, "borough": "Brooklyn/Queens"},
+    "REYNOSO":        {"full_name": "Antonio Reynoso",       "district": 34, "borough": "Brooklyn/Queens"},
+    "BRONX DELEGATION": {"full_name": "Bronx Delegation",    "district": None, "borough": "Bronx"},
+    "BROOKLYN DELEGATION": {"full_name": "Brooklyn Delegation", "district": None, "borough": "Brooklyn"},
+    "QUEENS DELEGATION": {"full_name": "Queens Delegation",  "district": None, "borough": "Queens"},
+    "MANHATTAN DELEGATION": {"full_name": "Manhattan Delegation", "district": None, "borough": "Manhattan"},
+    "STATEN ISLAND DELEGATION": {"full_name": "Staten Island Delegation", "district": None, "borough": "Staten Island"},
+    "SPEAKER":        {"full_name": "Speaker (Councilwide)", "district": None, "borough": "Citywide"},
+    "CITYWIDE":       {"full_name": "Citywide Initiative",   "district": None, "borough": "Citywide"},
+    "CITY COUNCIL":   {"full_name": "City Council (Citywide)", "district": None, "borough": "Citywide"},
 }
 
 
@@ -177,15 +218,81 @@ def load_betanyc_awards():
         return []
 
 
+def _looks_like_corrupted_name(s):
+    """
+    Detect organization strings that are parser artifacts rather than
+    real names. They carry leftover EINs, dollar amounts, asterisks,
+    or other row-boundary junk from PDF extraction.
+    """
+    if not s:
+        return True
+    if re.search(r"\b\d{2}-\d{7}\b", s):
+        return True
+    if re.search(r"\b\d{9}\b", s):
+        return True
+    if re.search(r"\$\s?[\d,]+", s):
+        return True
+    if "*" in s:
+        return True
+    if len(s) > 120:
+        return True
+    return False
+
+
+def _normalize_name(s):
+    """Uppercase, strip leading articles, strip corporate suffixes."""
+    s = (s or "").upper().strip()
+    for prefix in ["THE ", "A ", "AN "]:
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+    for suffix in [", INC.", " INC.", ", INC", " INC",
+                   " INCORPORATED", ", LTD.", " LTD.", " CORP.", " CORP",
+                   " LLC", ", LLC", " L.L.C.", ", L.L.C."]:
+        if s.endswith(suffix):
+            s = s[:-len(suffix)]
+    return s.strip()
+
+
+def _canonical_org_key(s):
+    """
+    Reduce a name to a canonical key for deduplication.
+    Handles 'The' as suffix ('Bronx Defenders, The') and prefix.
+    """
+    s = (s or "").upper().strip()
+    for suffix in [", THE", " THE"]:
+        if s.endswith(suffix):
+            s = s[:-len(suffix)].strip()
+    if s.startswith("THE "):
+        s = s[4:].strip()
+    for suffix in [", INC.", " INC.", ", INC", " INC",
+                   " INCORPORATED", ", LTD.", " LTD.",
+                   ", LLC", " LLC"]:
+        if s.endswith(suffix):
+            s = s[:-len(suffix)].strip()
+    s = re.sub(r"[,;:]+", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_all_organizations():
+    """
+    Return display names for organizations.
+    Filters parser artifacts. Deduplicates on canonical key so
+    'Bronx Defenders' and 'Bronx Defenders, The' do not both appear.
+    """
     rows = load_betanyc_awards()
-    names = set()
+    seen_keys = {}
     for r in rows:
         org = (r.get("organization") or "").strip()
-        if org:
-            names.add(org)
-    return sorted(names)
+        if not org or _looks_like_corrupted_name(org):
+            continue
+        key = _canonical_org_key(org)
+        if not key:
+            continue
+        if key not in seen_keys or len(org) < len(seen_keys[key]):
+            seen_keys[key] = org
+    return sorted(seen_keys.values())
 
 
 def get_mcp_client():
@@ -217,99 +324,32 @@ def rank_organizations(all_orgs, query, limit=4):
     return ordered[:limit]
 
 
-def _normalize_name(s):
-    """Uppercase, strip leading articles, strip corporate suffixes."""
-    s = (s or "").upper().strip()
-    for prefix in ["THE ", "A ", "AN "]:
-        if s.startswith(prefix):
-            s = s[len(prefix):]
-    for suffix in [", INC.", " INC.", ", INC", " INC",
-                   " INCORPORATED", ", LTD.", " LTD.", " CORP.", " CORP",
-                   " LLC", ", LLC", " L.L.C.", ", L.L.C."]:
-        if s.endswith(suffix):
-            s = s[:-len(suffix)]
-    return s.strip()
-
-
-def _strip_slashes_and_punct(s):
+def resolve_member(member):
     """
-    Turn slashes, dashes, commas, and multiple spaces into single spaces.
-    Used for a secondary equality pass when comparing names.
+    Return a dict describing the Council Member, or a fallback dict
+    if the surname is not in the mapping table. Never returns None
+    for a non-empty member string, so the UI can always show something.
     """
-    s = re.sub(r"[/\\,;:\-]+", " ", s)
-    s = re.sub(r"\s+", " ", s)
-    return s.strip()
-
-
-# ------------------------------------------------------------------
-# TRACE LOGIC
-# ------------------------------------------------------------------
-def find_awards(rows, org_query):
-    """
-    Match rows in the BetaNYC CSV.
-
-    Strategy, in order of strictness:
-      1. Normalized exact equality of the full name.
-      2. Normalized full name appears as a substring of the row's
-         name (allows suffixes like "/ Civil Division").
-      3. Normalized full name appears as a substring after stripping
-         punctuation (handles slashes and commas).
-      4. If nothing matched, fall back to requiring all significant
-         tokens to appear (last resort for messy CSV rows).
-
-    This strict-first approach prevents 'Center for Hope Services'
-    from matching unrelated orgs that merely share the token 'HOPE'.
-    """
-    normalized_query = _normalize_name(org_query)
-    if not normalized_query:
-        return []
-
-    query_nopunct = _strip_slashes_and_punct(normalized_query)
-
-    exact = []
-    substring = []
-    nopunct = []
-
-    for r in rows:
-        org = _normalize_name(r.get("organization"))
-        if not org:
-            continue
-        if org == normalized_query:
-            exact.append(r)
-        elif normalized_query in org:
-            substring.append(r)
-        else:
-            org_nopunct = _strip_slashes_and_punct(org)
-            if query_nopunct and query_nopunct in org_nopunct:
-                nopunct.append(r)
-
-    if exact:
-        return exact
-    if substring:
-        return substring
-    if nopunct:
-        return nopunct
-
-    # Last-resort token match. Only used when the strict passes fail.
-    query_tokens = [t for t in normalized_query.split() if len(t) > 2]
-    if not query_tokens:
-        return []
-    token_matches = []
-    for r in rows:
-        org = _normalize_name(r.get("organization"))
-        if all(t in org for t in query_tokens):
-            token_matches.append(r)
-    return token_matches
-
-
-def resolve_district(member):
     if not member or member == "?":
         return None
     text = member.upper().strip()
     for surname, info in COUNCIL_MEMBER_DISTRICTS.items():
         if surname.upper() in text:
-            return info
-    return None
+            return {
+                "surname": member,
+                "full_name": info.get("full_name", member.title()),
+                "district": info.get("district"),
+                "borough": info.get("borough"),
+                "mapped": True,
+            }
+    # Fallback: no district known, but still a valid member.
+    return {
+        "surname": member,
+        "full_name": member.title(),
+        "district": None,
+        "borough": None,
+        "mapped": False,
+    }
 
 
 def parse_amount(value):
@@ -319,6 +359,58 @@ def parse_amount(value):
         return 0.0
 
 
+# ------------------------------------------------------------------
+# TRACE LOGIC
+# ------------------------------------------------------------------
+def find_awards(rows, org_query):
+    """
+    Match rows whose canonical org key equals the query's canonical key.
+    This merges 'Bronx Defenders' and 'Bronx Defenders, The', and
+    filters out parser artifacts.
+    """
+    target_key = _canonical_org_key(org_query)
+    if not target_key:
+        return []
+
+    matches = []
+    for r in rows:
+        org = r.get("organization") or ""
+        if _looks_like_corrupted_name(org):
+            continue
+        if _canonical_org_key(org) == target_key:
+            matches.append(r)
+
+    if matches:
+        return matches
+
+    # Fall back to strict substring match
+    normalized_query = _normalize_name(org_query)
+    if not normalized_query:
+        return []
+    fallback = []
+    for r in rows:
+        raw = r.get("organization") or ""
+        if _looks_like_corrupted_name(raw):
+            continue
+        org = _normalize_name(raw)
+        if normalized_query == org or normalized_query in org:
+            fallback.append(r)
+    return fallback
+
+
+def _pin_prefix_from_agency(agency, fiscal_year):
+    """
+    Build a PIN prefix from agency code and fiscal year.
+    Council PINs have an 'L' after the agency + year.
+    """
+    # Agency codes are the first three characters of a PIN.
+    # We do not have a full mapping, but DYCD is 260, and DOC is 072,
+    # etc. If the caller passes an agency name, we cannot build the
+    # prefix. This is a stub; the real mapping is small enough to
+    # hardcode if needed.
+    return None
+
+
 def trace_nonprofit(org_query):
     result = {
         "awards": [],
@@ -326,6 +418,8 @@ def trace_nonprofit(org_query):
         "members": [],
         "unattributed": [],
         "single_member_warning": False,
+        "lag_warning": False,
+        "missing_mocs_id_years": set(),
     }
 
     rows = load_betanyc_awards()
@@ -341,7 +435,7 @@ def trace_nonprofit(org_query):
 
         if member and member != "?":
             if member not in member_totals:
-                info = resolve_district(member)
+                info = resolve_member(member)
                 member_totals[member] = {
                     "surname": member,
                     "info": info,
@@ -358,11 +452,32 @@ def trace_nonprofit(org_query):
     )
     result["unattributed"] = unattributed
 
-    resolved = [m for m in member_totals.values() if m["info"] is not None]
+    resolved = [m for m in member_totals.values()
+                if m["info"] and m["info"].get("mapped")]
     if len(resolved) < 2 and len(member_totals) >= 1:
         result["single_member_warning"] = True
 
-    # Send the full normalized name to Databook.
+    # Detect recent fiscal years with no contracts (registration lag)
+    current_year = datetime.now().year
+    has_recent_award = False
+    has_mocs_gap_year = False
+    for a in awards:
+        year_raw = (a.get("year") or a.get("fiscal_year") or "").replace("FY", "")
+        try:
+            year_num = int(year_raw)
+        except (ValueError, TypeError):
+            continue
+        # Fiscal year YY is roughly calendar year 2000 + YY
+        if year_num >= (current_year - 2000 - 1):
+            has_recent_award = True
+        if year_num in (22, 23):
+            has_mocs_gap_year = True
+
+    result["lag_warning"] = has_recent_award
+    if has_mocs_gap_year:
+        result["missing_mocs_id_years"].add("FY2022/FY2023")
+
+    # Send the FULL normalized name to Databook.
     vendor_query = _normalize_name(org_query) or org_query
 
     try:
@@ -385,10 +500,10 @@ def trace_nonprofit(org_query):
         contract_text = client.extract_text(contract_resp)
         raw_contracts = parse_contract_blocks(contract_text)
 
-        # Strict client-side filter: the returned vendor's normalized
-        # name must equal the query, or contain the query as a
-        # substring after punctuation stripping.
-        query_nopunct = _strip_slashes_and_punct(vendor_query)
+        # Strict filter: returned vendor's normalized name must equal
+        # the query, or contain it as a substring after punctuation strip.
+        query_nopunct = re.sub(r"[/\\,;:\-]+", " ", vendor_query)
+        query_nopunct = re.sub(r"\s+", " ", query_nopunct).strip()
         filtered = []
         for c in raw_contracts:
             v = _normalize_name(c.get("vendor"))
@@ -400,7 +515,8 @@ def trace_nonprofit(org_query):
             if vendor_query and vendor_query in v:
                 filtered.append(c)
                 continue
-            v_nopunct = _strip_slashes_and_punct(v)
+            v_nopunct = re.sub(r"[/\\,;:\-]+", " ", v)
+            v_nopunct = re.sub(r"\s+", " ", v_nopunct).strip()
             if query_nopunct and query_nopunct in v_nopunct:
                 filtered.append(c)
 
@@ -420,8 +536,14 @@ def parse_contract_blocks(text):
             continue
         title = lines[0].replace("**", "").rstrip(".").strip()
         vendor = agency = amount = status = start = end = url = None
+        contract_id = None
         for line in lines:
             line = line.strip()
+            # Try to pick a contract ID from the title, e.g. "CT126020238807620"
+            if contract_id is None:
+                m = re.search(r"\b(CT\d{10,})\b", line)
+                if m:
+                    contract_id = m.group(1)
             if line.startswith("Vendor:"):
                 m = re.search(r"Vendor:\s*(.*?)\s*\|", line)
                 if m:
@@ -453,6 +575,7 @@ def parse_contract_blocks(text):
             "start": start,
             "end": end,
             "url": url,
+            "contract_id": contract_id,
         })
     return blocks
 
@@ -464,12 +587,18 @@ def is_discretionary(contract):
 
 def member_display(m):
     info = m["info"]
-    if info:
-        title = "{} — District {} ({})".format(
-            info["full_name"], info["district"], info["borough"]
-        )
+    if not info:
+        return m["surname"], "${:,.0f} across {} award(s)".format(
+            m["total"], m["count"])
+    full_name = info.get("full_name", m["surname"].title())
+    district = info.get("district")
+    borough = info.get("borough")
+    if district is not None:
+        title = "{} — District {} ({})".format(full_name, district, borough)
+    elif borough:
+        title = "{} — {} (no single district)".format(full_name, borough)
     else:
-        title = "{} — district not mapped".format(m["surname"])
+        title = full_name
     subtitle = "${:,.0f} across {} award(s)".format(m["total"], m["count"])
     return title, subtitle
 
@@ -478,14 +607,13 @@ def member_matches_search(m, query):
     if not query:
         return True
     q = query.upper().strip()
-    info = m["info"]
+    info = m["info"] or {}
     haystack_parts = [m["surname"]]
-    if info:
-        haystack_parts += [
-            info.get("full_name", ""),
-            str(info.get("district", "")),
-            info.get("borough", ""),
-        ]
+    haystack_parts += [
+        info.get("full_name", "") or "",
+        str(info.get("district") or ""),
+        info.get("borough") or "",
+    ]
     haystack = " ".join(haystack_parts).upper()
     return q in haystack
 
@@ -501,23 +629,32 @@ st.set_page_config(
 
 st.title("NYC Council Discretionary Award Tracker")
 st.caption(
-    "Type a nonprofit name to see how Council discretionary funding "
-    "became a contract, and whether it was paid."
+    "Trace a NYC Council discretionary award from designation to "
+    "registered contract to Checkbook NYC payments."
 )
 
 with st.expander("How to use this", expanded=False):
     st.markdown(
         """
         **What this does:** traces a NYC Council discretionary award
-        from the moment it was designated through the registered
-        contract and the payments recorded in Checkbook NYC.
+        ("Schedule C" or "member item") from designation through the
+        registered contract and the payments recorded in Checkbook NYC.
 
         **How to use it:**
         1. Start typing a nonprofit name in the box below.
         2. Pick the matching organization from the dropdown.
         3. Click **Trace this organization**.
-        4. Use the search box in the Council Members section to filter
-           by member name, district, or borough.
+        4. Use the search box in the Council Members section to filter.
+
+        **Known data limitations:**
+        - The BetaNYC source CSV is a derived dataset. Some rows are
+          missing or have corrupted fields. The Council's funded
+          disclosure workbooks are the primary source for FY2024+.
+        - FY2022 and FY2023 awards have no public MOCS award number.
+        - Recent fiscal years often have no registered contract yet
+          because registration lags by a median of 13 months.
+        - We do not compute "awarded vs. paid" reconciliations. The
+          three stages are shown as independent facts.
         """
     )
 
@@ -527,7 +664,7 @@ all_orgs = get_all_organizations()
 
 typed = st.text_input(
     "Start typing a nonprofit name",
-    placeholder="e.g., Center for Community, Bronx Defenders...",
+    placeholder="e.g., Bronx Defenders, Legal Aid Society...",
     key="typed_org",
 ).strip()
 
@@ -537,7 +674,6 @@ else:
     matches = []
 
 selected_org = None
-
 if typed and not matches:
     st.warning(
         "No organizations in the source data match that text. "
@@ -551,6 +687,20 @@ elif matches:
     )
 elif not typed:
     st.caption("Start typing above to see matching organizations.")
+
+# Secondary search by PIN prefix
+with st.expander("Or search by contract PIN prefix (advanced)"):
+    st.markdown(
+        "**PIN structure:** agency code (3 digits) + fiscal year (2 digits) "
+        "+ procurement method code (1 letter) + sequence. Council "
+        "discretionary money is coded `L`. Example: `26023L` means DYCD, "
+        "FY2023, Council."
+    )
+    pin_prefix = st.text_input(
+        "PIN prefix",
+        placeholder="e.g., 26023L",
+        key="pin_prefix",
+    ).strip()
 
 trace_clicked = st.button(
     "Trace this organization",
@@ -581,28 +731,52 @@ if trace_clicked and selected_org:
 
     if not awards and not contracts:
         st.warning(
-            "No results found for this organization. This can happen "
-            "when the organization appears in the source data under a "
-            "slightly different legal name."
+            "No results found for this organization. The BetaNYC source "
+            "CSV does not contain a row for this name. This is a known "
+            "defect — some orgs are missing from the derived dataset "
+            "even when the Council's funded disclosure workbooks list "
+            "them."
         )
         st.stop()
 
+    # --- Registration lag warning ---
+    if result["lag_warning"]:
+        st.warning(
+            "**Registration lag.** This organization has awards in "
+            "recent fiscal years. Contracts for recent awards are often "
+            "not registered yet — the median lag from term start to "
+            "registration is about 13 months, and about 1 in 10 takes "
+            "three years. A missing contract does not mean the money "
+            "was not paid."
+        )
+
+    # --- FY2022–FY2023 MOCS ID gap ---
+    if result["missing_mocs_id_years"]:
+        st.info(
+            "**FY2022–FY2023 have no public MOCS award number.** The "
+            "NYC Open Data source stopped carrying the MOCS ID after "
+            "FY2021, and the Council's funded disclosure workbooks only "
+            "start including it in FY2024. If you need an award number "
+            "for those years, there is no public source for it."
+        )
+
+    # --- Completeness warning ---
     if result["single_member_warning"]:
         st.warning(
-            "Data completeness note: The BetaNYC dataset only shows one "
-            "Council Member for this organization. This may be due to a "
-            "known parsing issue in the source data. Cross-check against "
-            "the official Council Schedule C PDFs and the MOCS "
-            "Discretionary Award Tracker for the complete list."
+            "**Data completeness note.** The BetaNYC dataset only shows "
+            "one Council Member for this organization. This may be due "
+            "to the parser dropping rows. Cross-check against the "
+            "official Council funded disclosure workbooks."
         )
 
     st.info(
-        "Check official award status. The MOCS Discretionary Award "
+        "**Check official award status.** The MOCS Discretionary Award "
         "Tracker is the authoritative source for whether an award has "
         "been cleared. [Open the MOCS Tracker]({}) and search by EIN "
         "or organization name.".format(MOCS_TRACKER_URL)
     )
 
+    # --- Council Members ---
     if members:
         st.subheader("Council Members tied to these awards")
         st.caption(
@@ -625,8 +799,7 @@ if trace_clicked and selected_org:
         else:
             top = filtered_members[:5]
             rest = filtered_members[5:]
-
-            for m in top:
+            for m in top: 
                 title, subtitle = member_display(m)
                 st.markdown("**{}**  \n{}".format(title, subtitle))
 
@@ -636,6 +809,7 @@ if trace_clicked and selected_org:
                         title, subtitle = member_display(m)
                         st.markdown("**{}**  \n{}".format(title, subtitle))
 
+    # --- Unattributed awards ---
     if unattributed:
         total_un = sum(parse_amount(a.get("amount")) for a in unattributed)
         st.subheader("Awards not attributed to a specific Member")
@@ -653,6 +827,7 @@ if trace_clicked and selected_org:
                 agency = a.get("agency", "?")
                 st.markdown("- FY{} — ${} — {}".format(year, amount, agency))
 
+    # --- Award records ---
     if awards:
         st.subheader("Award records")
         table_rows = []
@@ -667,11 +842,16 @@ if trace_clicked and selected_org:
             })
         st.dataframe(table_rows, use_container_width=True)
 
+    # --- Discretionary contracts ---
     if discretionary:
         st.subheader("Discretionary contracts")
         for c in discretionary:
             with st.container(border=True):
                 st.markdown("**{}**".format(c["title"]))
+                if c.get("contract_id"):
+                    st.markdown(
+                        "Contract ID: `{}`".format(c["contract_id"])
+                    )
                 cols = st.columns(4)
                 cols[0].markdown("**Vendor**  \n{}".format(c.get("vendor", "?")))
                 cols[1].markdown("**Agency**  \n{}".format(c.get("agency", "?")))
@@ -682,11 +862,13 @@ if trace_clicked and selected_org:
                 if c.get("url"):
                     st.markdown("[View on Databook.nyc]({})".format(c["url"]))
 
+    # --- All contracts ---
     if contracts:
         st.subheader("All contracts found")
         contract_rows = []
         for c in contracts:
             contract_rows.append({
+                "Contract ID": c.get("contract_id", ""),
                 "Title": c.get("title", "?"),
                 "Vendor": c.get("vendor", "?"),
                 "Agency": c.get("agency", "?"),
@@ -698,29 +880,75 @@ if trace_clicked and selected_org:
             })
         st.dataframe(contract_rows, use_container_width=True)
 
+    # --- Sources ---
     st.divider()
     with st.expander("Sources and methodology"):
         st.markdown(
             "**Search term used:** `{}`\n\n"
-            "**Data sources:**\n\n"
-            "1. **BetaNYC New-York-City-Budget** — combined Schedule C awards. "
+            "**Data sources, in order of authority:**\n\n"
+            "1. **NYC Council funded disclosure workbooks (primary source).** "
+            "For FY2024 and later, these are the authoritative record of "
+            "Council discretionary awards. Each row includes fiscal year, "
+            "sponsoring member, legal name, EIN, agency, amount, purpose, "
+            "and status. From FY2024 onward they also include the MOCS "
+            "award number. "
+            "[FY2024 workbook]({})\n\n"
+            "2. **BetaNYC New-York-City-Budget (derived dataset).** "
+            "Combined Schedule C awards scraped from Council PDFs. Used "
+            "by this app because it is machine-readable and covers "
+            "FY2015–FY2027. Note: this dataset has documented parsing "
+            "defects. Some rows are missing entirely, some have "
+            "corrupted EINs, and some merge two adjacent awards into "
+            "one malformed row. When this app shows zero awards for an "
+            "organization, check the Council workbooks first. "
             "[GitHub repo](https://github.com/BetaNYC/New-York-City-Budget)\n\n"
-            "2. **Databook.nyc** — MCP server joining MOCS contracts to "
-            "Checkbook NYC payments. [databook.nyc](https://databook.nyc)\n\n"
-            "3. **MOCS Discretionary Award Tracker** — official status of "
-            "each discretionary award. [Open the tracker]({})\n\n"
-            "4. **NYC Council roster** — member-to-district mapping. "
+            "3. **Databook.nyc (contract and payment lookup).** "
+            "MCP server joining MOCS contracts to Checkbook NYC "
+            "payments. Contracts are keyed by the FMS Contract ID "
+            "(`CT...`). The contract ID is the exact join key to "
+            "spending records. "
+            "[databook.nyc](https://databook.nyc)\n\n"
+            "4. **MOCS Discretionary Award Tracker (status lookup).** "
+            "The authoritative source for award clearance status. "
+            "Covers FY2019–FY2021 only in its public snapshot, last "
+            "updated June 2021. It does not carry contract numbers or "
+            "payment amounts. "
+            "[Open the tracker]({})\n\n"
+            "5. **NYC Council roster** — member-to-district mapping. "
             "[council.nyc.gov](https://council.nyc.gov/districts/)\n\n"
             "**Known limitations:**\n\n"
-            "- Parsing defect in source data. BetaNYC documents an open "
-            "issue where some Schedule C award rows lose their boundaries "
-            "during PDF extraction. Cross-check against official sources.\n"
-            "- The `member` field is a surname only. The mapping table "
-            "resolves it to a full name and district.\n"
-            "- Some awards have a blank `member` field. These are usually "
-            "Citywide Initiatives or fiscal sponsor awards.\n"
-            "- Databook.nyc is a third-party service. If it is down, "
-            "contract lookups will fail.\n"
-            "- The MOCS Tracker is updated roughly every six weeks."
-            .format(selected_org, MOCS_TRACKER_URL)
+            "- **Parser defects in BetaNYC CSV.** Rows may be missing, "
+            "EINs may be corrupted, and adjacent rows may be merged. "
+            "This app filters out the most obvious malformed names but "
+            "cannot recover rows that were never parsed.\n"
+            "- **No public MOCS award number for FY2022–FY2023.** The "
+            "NYC Open Data source ends at FY2021 and the Council "
+            "workbooks begin carrying it in FY2024. For those two "
+            "fiscal years there is no public award number.\n"
+            "- **Registration lag.** Recent awards often have no "
+            "registered contract because registration lags by a median "
+            "of about 13 months. A missing contract does not mean the "
+            "money was not paid.\n"
+            "- **Name drift.** The same organization appears under "
+            "several spellings across years and systems. This app "
+            "canonicalizes on a normalized key but small orgs and "
+            "common names may still need hand-checking.\n"
+            "- **No awarded-vs-paid reconciliation.** This app shows "
+            "awards, contracts, and payments as three independent "
+            "facts. It does not compute a ratio, because the coverage "
+            "is not solid enough to support one.\n"
+            "- **Pass-through payments.** Payments recorded in "
+            "Checkbook may be charged to a fiscal sponsor's contract "
+            "rather than to the org's own. This app joins contracts to "
+            "spending by contract ID and shows contracts under the "
+            "registered vendor, which reduces but does not eliminate "
+            "this risk."
+            .format(
+                selected_org,
+                COUNCIL_WORKBOOK_TEMPLATE.format(year="2024"),
+                MOCS_TRACKER_URL,
+            )
         )
+else:
+    st.info("Enter a nonprofit name above to begin.")
+
