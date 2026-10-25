@@ -7,3 +7,9 @@ venv/
 .DS_Store
 *.log
 .vscode/
+audit.md
+awards.csv
+check_*.py
+check_members
+gap_*.csv
+Williams Test
