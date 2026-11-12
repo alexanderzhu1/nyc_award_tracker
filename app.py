@@ -75,13 +75,12 @@ def load_all_awards():
     return pd.DataFrame(all_rows)
 
 # --- CHECKBOOK API CONTRACT SEARCH ---
+import time
+
 def fetch_checkbook_contracts(search_term):
-    """
-    Query Checkbook NYC API directly using the purpose field.
-    This bypasses the broken vendor_name filter and finds contracts
-    where the org name is mentioned in the description.
-    """
-    # Clean up the search term (remove commas, Inc, etc. to make the keyword broader)
+    # 1. Pause to respect the 1 req/sec rate limit
+    time.sleep(1.2) 
+    
     clean_term = search_term.upper().split(",")[0].replace(" INC", "").replace(" INC.", "").replace(" CORP", "").strip()
     
     xml_payload = f"""<request>
@@ -108,12 +107,15 @@ def fetch_checkbook_contracts(search_term):
         resp = requests.post(
             CHECKBOOK_API, 
             data=xml_payload.encode("utf-8"),
-            headers={"Content-Type": "application/xml"},
+            # 2. Add a User-Agent header to look like a browser
+            headers={
+                "Content-Type": "application/xml",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            },
             timeout=30
         )
         resp.raise_for_status()
         
-        # Parse the XML response
         from xml.etree import ElementTree as ET
         root = ET.fromstring(resp.text)
         
