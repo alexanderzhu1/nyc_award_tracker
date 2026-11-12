@@ -65,7 +65,8 @@ def load_all_awards():
                     "Year": year,
                     "Member": (raw.get("member") or "").strip(),
                     "Organization": org,
-                    "Program": (raw.get("program") or "").strip() or "Unspecified / General Funding",
+                    # Fallback to friendly category name if program is blank
+                    "Program": (raw.get("program") or "").strip() or friendly_cat,
                     "Amount": float(str(raw.get("amount") or "0").replace(",", "").replace("$", "").strip() or 0),
                     "Agency": (raw.get("agency") or "").strip(),
                     "Sector": friendly_cat
@@ -94,14 +95,18 @@ def fetch_open_data_contracts(search_term):
         
         contracts = []
         for row in data:
+            # Strip the 'T00:00:00.000' time from the dates
+            start_date = row.get("start_date", "Unknown").split("T")[0]
+            end_date = row.get("end_date", "Unknown").split("T")[0]
+            
             contracts.append({
                 "id": row.get("pin", "No PIN"),
                 "vendor": row.get("vendor_name", "Unknown"),
                 "agency": row.get("agency_name", "Unknown"),
                 "amount": row.get("contract_amount", "0"),
-                "reg_date": row.get("start_date", "Unknown"),
-                "start": row.get("start_date", "Unknown"),
-                "end": row.get("end_date", "Unknown"),
+                "reg_date": start_date,
+                "start": start_date,
+                "end": end_date,
                 "purpose": row.get("short_title", "No description")
             })
         return contracts
