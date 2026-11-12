@@ -15,7 +15,7 @@ import pandas as pd
 BETANYC_MAIN_URL = "https://raw.githubusercontent.com/BetaNYC/New-York-City-Budget/main/data/combined/all_years_awards.csv"
 BETANYC_ABSORBED_URL = "https://raw.githubusercontent.com/BetaNYC/New-York-City-Budget/main/data/recovered/schedule_c_absorbed_awards.csv"
 BETANYC_APPENDIX_URL = "https://raw.githubusercontent.com/BetaNYC/New-York-City-Budget/main/data/recovered/schedule_c_appendix_recovered.csv"
-CHECKBOOK_API = "https://www.checkbooknyc.com/api"
+OPEN_DATA_CONTRACTS_URL = "https://data.cityofnewyork.us/resource/qyyg-4tf5.json"
 
 CATEGORY_MAP = {
     "Youth & Education": ["YOUTH", "EDUCATION", "SCHOOL", "AFTER SCHOOL"],
@@ -74,62 +74,35 @@ def load_all_awards():
             st.warning(f"Failed to load {url}: {e}")
     return pd.DataFrame(all_rows)
 
-# --- CHECKBOOK API CONTRACT SEARCH ---
-import time
-
-def fetch_checkbook_contracts(search_term):
-    # 1. Pause to respect the 1 req/sec rate limit
-    time.sleep(1.2) 
-    
+# --- NYC OPEN DATA CONTRACT SEARCH ---
+def fetch_open_data_contracts(search_term):
+    """
+    Query NYC Open Data 'Recent Contract Awards' (qyyg-4tf5).
+    """
     clean_term = search_term.upper().split(",")[0].replace(" INC", "").replace(" INC.", "").replace(" CORP", "").strip()
     
-    xml_payload = f"""<request>
-      <type_of_data>Contracts</type_of_data>
-      <records_from>1</records_from>
-      <max_records>10</max_records>
-      <search_criteria>
-        <criteria><name>purpose</name><value>{clean_term}</value></criteria>
-        <criteria><name>status</name><value>registered</value></criteria>
-      </search_criteria>
-      <response_columns>
-        <column>contract_id</column>
-        <column>vendor_name</column>
-        <column>agency</column>
-        <column>amount</column>
-        <column>registration_date</column>
-        <column>start_date</column>
-        <column>end_date</column>
-        <column>purpose</column>
-      </response_columns>
-    </request>"""
-
+    params = {
+        "$where": f"upper(vendor_name) like '%{clean_term}%'",
+        "$limit": 10,
+        "$order": "start_date DESC"
+    }
+    
     try:
-        resp = requests.post(
-            CHECKBOOK_API, 
-            data=xml_payload.encode("utf-8"),
-            # 2. Add a User-Agent header to look like a browser
-            headers={
-                "Content-Type": "application/xml",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            },
-            timeout=30
-        )
+        resp = requests.get(OPEN_DATA_CONTRACTS_URL, params=params, timeout=30)
         resp.raise_for_status()
-        
-        from xml.etree import ElementTree as ET
-        root = ET.fromstring(resp.text)
+        data = resp.json()
         
         contracts = []
-        for c in root.iter("contract"):
+        for row in data:
             contracts.append({
-                "id": c.findtext("contract_id") or "No ID",
-                "vendor": c.findtext("vendor_name") or "Unknown",
-                "agency": c.findtext("agency") or "Unknown",
-                "amount": c.findtext("amount") or "0",
-                "reg_date": c.findtext("registration_date") or "Unknown",
-                "start": c.findtext("start_date") or "Unknown",
-                "end": c.findtext("end_date") or "Unknown",
-                "purpose": c.findtext("purpose") or "No description"
+                "id": row.get("pin", "No PIN"),
+                "vendor": row.get("vendor_name", "Unknown"),
+                "agency": row.get("agency_name", "Unknown"),
+                "amount": row.get("contract_amount", "0"),
+                "reg_date": row.get("start_date", "Unknown"),
+                "start": row.get("start_date", "Unknown"),
+                "end": row.get("end_date", "Unknown"),
+                "purpose": row.get("short_title", "No description")
             })
         return contracts
     except Exception as e:
@@ -182,22 +155,22 @@ if search_query:
                 st.markdown("**Award Records**")
                 st.dataframe(group[["Year", "Member", "Program", "Agency", "Amount"]], hide_index=True, use_container_width=True)
                 
-                st.markdown("**Contracts (via Checkbook NYC API)**")
-                with st.spinner("Searching Checkbook..."):
-                    contracts = fetch_checkbook_contracts(org)
+                st.markdown("**Contract Awards (via NYC Open Data)**")
+                with st.spinner("Searching Open Data..."):
+                    contracts = fetch_open_data_contracts(org)
                     
                     if not contracts:
-                        st.caption("No registered contracts found matching this vendor in Checkbook NYC.")
+                        st.caption("No recent contract awards found for this vendor in the Open Data feed.")
                     elif "error" in contracts[0]:
                         st.error(f"API Error: {contracts[0]['error']}")
                     else:
                         for c in contracts:
-                            st.markdown(f"**Contract ID:** `{c['id']}`")
+                            st.markdown(f"**PIN:** `{c['id']}`")
                             st.markdown(f"- **Vendor:** {c['vendor']}")
                             st.markdown(f"- **Agency:** {c['agency']}")
                             st.markdown(f"- **Amount:** ${c['amount']}")
                             st.markdown(f"- **Term:** {c['start']} to {c['end']}")
-                            st.markdown(f"- **Purpose:** {c['purpose'][:200]}...")
+                            st.markdown(f"- **Purpose:** {c['purpose']}")
                             st.divider()
 
 else:
