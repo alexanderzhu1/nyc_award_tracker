@@ -65,7 +65,6 @@ def load_all_awards():
                     "Year": year,
                     "Member": (raw.get("member") or "").strip(),
                     "Organization": org,
-                    # Fallback to friendly category name if program is blank
                     "Program": (raw.get("program") or "").strip() or friendly_cat,
                     "Amount": float(str(raw.get("amount") or "0").replace(",", "").replace("$", "").strip() or 0),
                     "Agency": (raw.get("agency") or "").strip(),
@@ -77,9 +76,6 @@ def load_all_awards():
 
 # --- NYC OPEN DATA CONTRACT SEARCH ---
 def fetch_open_data_contracts(search_term):
-    """
-    Query NYC Open Data 'Recent Contract Awards' (qyyg-4tf5).
-    """
     clean_term = search_term.upper().split(",")[0].replace(" INC", "").replace(" INC.", "").replace(" CORP", "").strip()
     
     params = {
@@ -95,7 +91,6 @@ def fetch_open_data_contracts(search_term):
         
         contracts = []
         for row in data:
-            # Strip the 'T00:00:00.000' time from the dates
             start_date = row.get("start_date", "Unknown").split("T")[0]
             end_date = row.get("end_date", "Unknown").split("T")[0]
             
@@ -158,7 +153,8 @@ if search_query:
             org_total = group["Amount"].sum()
             with st.expander(f"{org} — ${org_total:,.0f}"):
                 st.markdown("**Award Records**")
-                st.dataframe(group[["Year", "Member", "Program", "Agency", "Amount"]], hide_index=True, use_container_width=True)
+                # UPDATED: Removed Member and Agency columns
+                st.dataframe(group[["Year", "Program", "Amount"]], hide_index=True, use_container_width=True)
                 
                 st.markdown("**Contract Awards (via NYC Open Data)**")
                 with st.spinner("Searching Open Data..."):
